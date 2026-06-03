@@ -6,7 +6,11 @@
 //
 // Extracted from index.ts so tests can import without activating the extension.
 
-import type { AssistantMessage, AssistantMessageEventStream, Model } from "@mariozechner/pi-ai";
+import type {
+	AssistantMessage,
+	AssistantMessageEventStream,
+	Model,
+} from "@earendil-works/pi-ai";
 import type { McpResult } from "./extract-tool-results.js";
 
 export interface PendingToolCall {
@@ -32,17 +36,28 @@ export class QueryContext {
 	turnSawToolCall = false;
 
 	get turnBlocks(): Array<any> {
-		if (!this.turnOutput) throw new Error("turnBlocks accessed before resetTurnState");
+		if (!this.turnOutput)
+			throw new Error("turnBlocks accessed before resetTurnState");
 		return this.turnOutput.content;
 	}
 
 	resetTurnState(model: Model<any>): void {
 		this.turnOutput = {
-			role: "assistant", content: [],
-			api: model.api, provider: model.provider, model: model.id,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "stop", timestamp: Date.now(),
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
 		};
 		this.turnStarted = false;
 		this.turnSawStreamEvent = false;
@@ -55,18 +70,24 @@ export class QueryContext {
 let _ctx = new QueryContext();
 const contextStack: QueryContext[] = [];
 
-export function ctx(): QueryContext { return _ctx; }
+export function ctx(): QueryContext {
+	return _ctx;
+}
 
-export function stackDepth(): number { return contextStack.length; }
+export function stackDepth(): number {
+	return contextStack.length;
+}
 
 export function pushContext(): void {
-	if (!_ctx.activeQuery) throw new Error("pushContext() called with no active query");
+	if (!_ctx.activeQuery)
+		throw new Error("pushContext() called with no active query");
 	contextStack.push(_ctx);
 	_ctx = new QueryContext();
 }
 
 export function popContext(): void {
-	if (contextStack.length === 0) throw new Error("popContext() called with empty stack");
+	if (contextStack.length === 0)
+		throw new Error("popContext() called with empty stack");
 	const parent = contextStack[contextStack.length - 1];
 	parent.deferredUserMessages.push(..._ctx.deferredUserMessages);
 	_ctx = contextStack.pop()!;
