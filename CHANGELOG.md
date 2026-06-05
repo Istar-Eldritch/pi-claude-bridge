@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fix: compaction hangs** — pi can fire multiple summarization completions concurrently (e.g. `compact()` runs history + turn-prefix summaries via `Promise.all`), but the bridge's single shared CC session and global `activeQuery`/`currentPiStream` can't host two queries at once, so one stream was left unfinalized and compaction hung. Summarization calls (self-contained, tool-less, single-user-message completions) now run via `runIsolatedSideQuery` in a fully isolated ephemeral CC session with their own stream and no shared-state mutation. Tool-bearing turns are unaffected.
+- **Fix: stale `activeQuery` race on abort/compaction** — `activeQuery` was only cleared in the query consumer's `.finally()`, so a follow-on call (e.g. `/compact` right after `abort()`) could observe a dead-but-uncleared query and take the never-finalized tool-result branch. Now cleared before the stream ends in all terminal paths, with a safety-net that tears down a provably-stale query and falls through to fresh handling.
+
 - **Add: claude-opus-4-8 model** — Anthropic shipped Opus 4.8, but the installed `@mariozechner/pi-ai` (0.73.x) doesn't define `claude-opus-4-8` yet, so adding the id to `MODEL_IDS_IN_ORDER` alone gets it dropped by `buildModels`' `piAiModels.find` filter. Added a `SYNTHETIC_MODELS` fallback that clones the `claude-opus-4-7` entry under the new id/name, BUT advertises `contextWindow: 200_000` for 4-8 (not 1M) because 4-8's 1M window is gated behind a Claude Code Statsig experiment (`tengu_amber_redwood2`) that is **not active** on the headless/SDK transport the bridge uses. Advertising 1M would prevent pi from compacting, leading to "Prompt is too long" server-side rejections. The `opus` shortcut now resolves to 4.8; 4.7/4.6 remain available for explicit pinning. See issue #22 for the deep-dive. Once pi-ai ships the official definition (with the correct context window), drop the synthetic entry.
 
 ## 0.4.0 — 2026-05-04

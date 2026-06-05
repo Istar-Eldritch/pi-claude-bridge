@@ -93,6 +93,34 @@ export function popContext(): void {
 	_ctx = contextStack.pop()!;
 }
 
+// Cheap structural check for "this provider call is a fresh standalone prompt
+// (e.g. compaction/summarization or a new user turn), not a within-query
+// tool-result/steer callback". Used to detect a *stale* activeQuery: when this
+// shape holds while a query is still marked active, the active query is no longer
+// live (its cleanup raced, or the CC subprocess wedged) and entering the
+// tool-result-delivery path would return a stream nothing ever finalizes -> hang.
+//
+// A genuine within-query callback always carries pi's ongoing conversation, so
+// its length is >= the shared-session cursor; a summarization context is a single
+// synthetic message (length << cursor). Steers/followUps arrive alongside a tool
+// result (caller additionally requires zero tool results before acting).
+//
+// Pure (no I/O) so it can be unit-tested. Caller still gates on `hasActiveQuery`
+// and a separate zero-tool-results check to preserve short-circuiting.
+export function isStaleForeignPromptShape(args: {
+	lastMsgRole: string | undefined;
+	pendingToolCalls: number;
+	contextLength: number;
+	sharedCursor: number;
+}): boolean {
+	return (
+		args.lastMsgRole === "user" &&
+		args.pendingToolCalls === 0 &&
+		args.sharedCursor > 0 &&
+		args.contextLength < args.sharedCursor
+	);
+}
+
 // Test-only: drop all state so test files can start from a clean module.
 // Not called from production.
 export function resetStack(): void {

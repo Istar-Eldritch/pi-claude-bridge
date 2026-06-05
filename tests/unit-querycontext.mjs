@@ -5,7 +5,7 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ctx, pushContext, popContext, resetStack, stackDepth } from "../src/query-state.js";
+import { ctx, pushContext, popContext, resetStack, stackDepth, isStaleForeignPromptShape } from "../src/query-state.js";
 
 const fakeModel = { api: "anthropic", provider: "anthropic", id: "test-model" };
 
@@ -154,5 +154,52 @@ describe("context pinning (MCP handler closure pattern)", () => {
 		// Pop restores parent as current
 		popContext();
 		assert.strictEqual(ctx(), capturedCtx);
+	});
+});
+
+describe("isStaleForeignPromptShape (stale activeQuery detection)", () => {
+	// Regression: a fresh standalone prompt (compaction/summarization) arriving
+	// while a stale activeQuery is still set must be recognized so the provider
+	// can tear it down and treat the call as a fresh query, instead of returning
+	// a tool-result-delivery stream that nothing ever finalizes (-> hang on
+	// /compact and auto-compaction). See pi-claude-bridge compaction-hang fix.
+
+	it("detects a summarization-style single-message context (length << cursor)", () => {
+		assert.strictEqual(
+			isStaleForeignPromptShape({ lastMsgRole: "user", pendingToolCalls: 0, contextLength: 1, sharedCursor: 287 }),
+			true,
+		);
+	});
+
+	it("rejects a genuine within-query callback (context length >= cursor)", () => {
+		assert.strictEqual(
+			isStaleForeignPromptShape({ lastMsgRole: "user", pendingToolCalls: 0, contextLength: 287, sharedCursor: 287 }),
+			false,
+		);
+		assert.strictEqual(
+			isStaleForeignPromptShape({ lastMsgRole: "user", pendingToolCalls: 0, contextLength: 300, sharedCursor: 287 }),
+			false,
+		);
+	});
+
+	it("rejects when handlers are still waiting (real tool-result delivery in flight)", () => {
+		assert.strictEqual(
+			isStaleForeignPromptShape({ lastMsgRole: "user", pendingToolCalls: 1, contextLength: 1, sharedCursor: 287 }),
+			false,
+		);
+	});
+
+	it("rejects a tool-result callback (last message is not a user message)", () => {
+		assert.strictEqual(
+			isStaleForeignPromptShape({ lastMsgRole: "toolResult", pendingToolCalls: 0, contextLength: 1, sharedCursor: 287 }),
+			false,
+		);
+	});
+
+	it("rejects when there is no shared session yet (cursor 0 / fresh start)", () => {
+		assert.strictEqual(
+			isStaleForeignPromptShape({ lastMsgRole: "user", pendingToolCalls: 0, contextLength: 1, sharedCursor: 0 }),
+			false,
+		);
 	});
 });

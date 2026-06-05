@@ -14,7 +14,7 @@ import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, stackDepth, pushContext, popContext } from "./query-state.js";
+import { QueryContext, ctx, stackDepth, pushContext, popContext, isStaleForeignPromptShape } from "./query-state.js";
 import { loadConfig, resolveSystemPromptMode } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
@@ -835,6 +835,177 @@ async function consumeQuery(
 	return { capturedSessionId };
 }
 
+/**
+ * Run a stateless, one-shot "side query" (compaction / branch summarization) in
+ * FULL ISOLATION from the shared CC session and the global QueryContext.
+ *
+ * pi emits these as self-contained, tool-less, single-user-message completions
+ * (the conversation to summarize is serialized into the prompt text), and it may
+ * fire several CONCURRENTLY — e.g. compact() runs the history summary and the
+ * turn-prefix summary via `Promise.all` on a split turn. The provider's shared
+ * state (activeQuery / currentPiStream / sharedSession) can only host one query
+ * at a time, so concurrent side-queries collide: the second is mistaken for
+ * tool-result delivery, hijacks currentPiStream, and the FIRST stream is never
+ * finalized -> the awaiting `Promise.all` hangs forever (this is the observed
+ * "compaction hangs" bug). Running them isolated (own ephemeral CC session,
+ * persistSession:false, zero shared mutation) makes them concurrency-safe and
+ * also stops them clobbering sharedSession with a throwaway summary session.
+ */
+function runIsolatedSideQuery(
+	model: Model<any>,
+	context: Context,
+	options: SimpleStreamOptions | undefined,
+	stream: AssistantMessageEventStream,
+): void {
+	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
+	const providerSettings = loadConfig(cwd).provider ?? {};
+	const systemPromptMode = resolveSystemPromptMode(providerSettings);
+	const agentsAppend = extractAgentsAppend();
+	const skillsAppend = extractSkillsBlock(context.systemPrompt);
+	const appendParts = [agentsAppend, skillsAppend].filter((p): p is string => Boolean(p));
+	const systemPromptContent = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
+	const effectiveSettingSources = systemPromptMode === "replace"
+		? []
+		: (providerSettings.settingSources ?? ["user", "project"]);
+	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
+	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+	const effort = options?.reasoning
+		? ((model as any).thinkingLevelMap?.[options.reasoning] as EffortLevel | undefined)
+			?? REASONING_TO_EFFORT[options.reasoning]
+		: undefined;
+	const extraArgs: Record<string, string | null> = { model: model.id };
+	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
+	if (effort) extraArgs["thinking-display"] = "summarized";
+	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
+
+	const promptBlocks = extractUserPromptBlocks(context.messages);
+	const promptText = extractUserPrompt(context.messages) ?? "";
+	const prompt: string | AsyncIterable<SDKUserMessage> = promptBlocks
+		? wrapPromptStream(promptBlocks)
+		: promptText;
+
+	debug(`sidequery: model=${model.id} mode=${systemPromptMode} effort=${effort ?? "default"} promptLen=${promptText.length}${promptBlocks ? " [+images]" : ""}`);
+
+	const sdkQuery = query({
+		prompt,
+		options: {
+			cwd,
+			env: childEnv,
+			tools: [],
+			permissionMode: "bypassPermissions",
+			includePartialMessages: true,
+			persistSession: false,
+			systemPrompt: systemPromptMode === "append"
+				? { type: "preset", preset: "claude_code", append: systemPromptContent }
+				: systemPromptContent ?? "",
+			extraArgs,
+			...(effort ? { effort } : {}),
+			...(effectiveSettingSources ? { settingSources: effectiveSettingSources as SettingSource[] } : {}),
+			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+			...makeCliDebugOptions("sidequery"),
+		},
+	});
+
+	const output: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+
+	let wasAborted = false;
+	const onAbort = () => {
+		wasAborted = true;
+		void sdkQuery.interrupt().catch(() => {});
+		try { sdkQuery.close(); } catch {}
+	};
+	if (options?.signal) {
+		if (options.signal.aborted) onAbort();
+		else options.signal.addEventListener("abort", onAbort, { once: true });
+	}
+
+	void (async () => {
+		let started = false;
+		let textStarted = false;
+		let text = "";
+		const ensureStarted = () => { if (!started) { stream.push({ type: "start", partial: output }); started = true; } };
+		const ensureTextStarted = () => {
+			ensureStarted();
+			if (!textStarted) {
+				output.content.push({ type: "text", text: "" });
+				stream.push({ type: "text_start", contentIndex: 0, partial: output });
+				textStarted = true;
+			}
+		};
+		try {
+			for await (const message of sdkQuery) {
+				if (wasAborted) break;
+				switch (message.type) {
+					case "stream_event": {
+						const event = (message as SDKMessage & { event: any }).event;
+						if (event?.type === "message_start" && event.message?.usage) {
+							updateUsage(output, event.message.usage, model);
+						} else if (event?.type === "content_block_delta" && event.delta?.type === "text_delta") {
+							ensureTextStarted();
+							text += event.delta.text;
+							(output.content[0] as { text: string }).text = text;
+							stream.push({ type: "text_delta", contentIndex: 0, delta: event.delta.text, partial: output });
+						} else if (event?.type === "message_delta") {
+							if (event.delta?.stop_reason) output.stopReason = mapStopReason(event.delta.stop_reason);
+							if (event.usage) updateUsage(output, event.usage, model);
+						}
+						break;
+					}
+					case "assistant": {
+						const usage = (message as any).message?.usage;
+						if (usage) updateUsage(output, usage, model);
+						break;
+					}
+					case "result": {
+						// Non-streaming fallback: if no text deltas arrived, use result text.
+						if (!textStarted && (message as any).subtype === "success") {
+							ensureTextStarted();
+							text = (message as any).result || "";
+							(output.content[0] as { text: string }).text = text;
+							stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: output });
+						}
+						break;
+					}
+					default:
+						break;
+				}
+			}
+
+			if (wasAborted || options?.signal?.aborted) {
+				output.stopReason = "aborted";
+				output.errorMessage = "Operation aborted";
+				stream.push({ type: "error", reason: "aborted", error: output });
+				stream.end();
+				return;
+			}
+
+			ensureStarted();
+			if (textStarted) stream.push({ type: "text_end", contentIndex: 0, content: text, partial: output });
+			const reason = output.stopReason === "length" ? "length" : "stop";
+			stream.push({ type: "done", reason, message: output });
+			stream.end();
+		} catch (error) {
+			debug("sidequery: error", error);
+			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+			output.errorMessage = error instanceof Error ? error.message : String(error);
+			stream.push({ type: "error", reason: output.stopReason as "aborted" | "error", error: output });
+			stream.end();
+		} finally {
+			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
+			try { sdkQuery.close(); } catch {}
+		}
+	})();
+}
+
 /** Provider entry point. Pi calls this for each new prompt and each tool result.
  *  Two cases: tool result delivery (active query) or fresh query. */
 function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream {
@@ -843,6 +1014,52 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// DEBUG: trace followUp message triggering
 	const lastMsgRole = context.messages[context.messages.length - 1]?.role;
 	debug(`provider: streamClaudeAgentSdk called, activeQuery=${!!ctx().activeQuery}, lastMsgRole=${lastMsgRole}, isReentrant=${ctx().activeQuery !== null}`);
+
+	// --- Isolated side-query (compaction / branch summarization) ---
+	// These are self-contained, tool-less, single-user-message completions. pi can
+	// fire several concurrently (compact() uses Promise.all on a split turn), which
+	// the shared-session/single-activeQuery machinery cannot host without orphaning
+	// a stream -> hang. Route them to an isolated runner that touches no shared
+	// state. Tool-bearing turns (length>1 or tools present) never match.
+	if (context.messages.length === 1 && lastMsgRole === "user") {
+		const { mcpTools: sideQueryTools } = resolveMcpTools(context, askClaudeToolName);
+		if (sideQueryTools.length === 0) {
+			debug(`provider: isolated side-query (tool-less single-message completion), activeQuery=${!!ctx().activeQuery}, stackDepth=${stackDepth()}`);
+			runIsolatedSideQuery(model, context, options, stream);
+			return stream;
+		}
+	}
+
+	// --- Stale activeQuery recovery (safety net) ---
+	// A fresh standalone prompt (e.g. compaction/summarization, or a new user turn)
+	// can arrive while a *stale* activeQuery is still set: the previous query was
+	// aborted/finished but its cleanup raced, or the CC subprocess wedged. Such a
+	// context carries no tool results, no waiting handlers, ends in a user message,
+	// and is shorter than the shared-session cursor (i.e. it is NOT pi's ongoing
+	// conversation). Falling into the tool-result-delivery branch below would hand
+	// back a stream that nothing ever finalizes -> indefinite hang. This is exactly
+	// what made `/compact` and auto-compaction hang. Tear down the stale query and
+	// fall through to fresh-query handling instead.
+	if (
+		ctx().activeQuery &&
+		isStaleForeignPromptShape({
+			lastMsgRole,
+			pendingToolCalls: ctx().pendingToolCalls.size,
+			contextLength: context.messages.length,
+			sharedCursor: sharedSession?.cursor ?? 0,
+		}) &&
+		extractAllToolResults(context).length === 0
+	) {
+		debug(`provider: stale activeQuery on fresh prompt (msgs=${context.messages.length} < cursor=${sharedSession?.cursor ?? 0}); tearing down and treating as fresh query`);
+		piUI?.notify("Claude bridge: recovered from a stale query before compaction/summarization", "warning");
+		const stale = ctx().activeQuery as { interrupt?: () => Promise<void>; close?: () => void } | null;
+		ctx().activeQuery = null;
+		try { void stale?.interrupt?.().catch(() => {}); } catch {}
+		try { stale?.close?.(); } catch {}
+		ctx().pendingToolCalls.clear();
+		ctx().pendingResults.clear();
+		// fall through to fresh-query handling below
+	}
 
 	// --- Tool result delivery ---
 	// Pi appends tool results to context and calls back. Extract this turn's results
@@ -1071,6 +1288,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					ctx().turnOutput.stopReason = "aborted";
 					ctx().turnOutput.errorMessage = "Operation aborted";
 				}
+				// Clear liveness BEFORE ending the stream so a follow-on call (e.g. a
+				// `/compact` that ran right after abort()) cannot observe a stale
+				// activeQuery and take the dead-stream tool-result branch. Reentrant
+				// queries are left for the outer .finally() to pop.
+				if (!isReentrant) ctx().activeQuery = null;
 				ctx().currentPiStream?.push({ type: "error", reason: "aborted", error: ctx().turnOutput! });
 				ctx().currentPiStream?.end();
 				ctx().currentPiStream = null;
@@ -1124,6 +1346,11 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 				ctx().activeQuery = sdkQuery;
 			}
 
+			// Clear liveness BEFORE finalizing so auto-compaction (which fires
+			// immediately after a turn completes) doesn't observe a stale activeQuery
+			// and hand the summarization request a stream nothing finalizes -> hang.
+			// Reentrant queries are left for the outer .finally() to pop.
+			if (!isReentrant) ctx().activeQuery = null;
 			finalizeCurrentStream(ctx().turnOutput?.stopReason);
 		})
 		.catch((error) => {
@@ -1137,6 +1364,16 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			if (ctx().turnOutput) {
 				ctx().turnOutput.stopReason = options?.signal?.aborted ? "aborted" : "error";
 				ctx().turnOutput.errorMessage = error instanceof Error ? error.message : String(error);
+			}
+			// Drain any handlers still awaiting results, then clear liveness BEFORE
+			// ending the stream so a follow-on compaction can't observe a stale
+			// activeQuery (the outer .finally() guard is skipped once cleared).
+			// Reentrant queries are left for the outer .finally() to pop.
+			if (!isReentrant) {
+				for (const pending of ctx().pendingToolCalls.values()) { pending.resolve({ content: [{ type: "text", text: "Query ended" }] }); }
+				ctx().pendingToolCalls.clear();
+				ctx().pendingResults.clear();
+				ctx().activeQuery = null;
 			}
 			ctx().currentPiStream?.push({ type: "error", reason: (ctx().turnOutput?.stopReason ?? "error") as "aborted" | "error", error: ctx().turnOutput! });
 			ctx().currentPiStream?.end();
