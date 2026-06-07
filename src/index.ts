@@ -878,7 +878,6 @@ function runIsolatedSideQuery(
 		: undefined;
 	const extraArgs: Record<string, string | null> = { model: model.id };
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
-	if (effort) extraArgs["thinking-display"] = "summarized";
 	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
 
 	const promptBlocks = extractUserPromptBlocks(context.messages);
@@ -902,7 +901,7 @@ function runIsolatedSideQuery(
 				? { type: "preset", preset: "claude_code", append: systemPromptContent }
 				: systemPromptContent ?? "",
 			extraArgs,
-			...(effort ? { effort } : {}),
+			...(effort ? { effort, thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
 			...(effectiveSettingSources ? { settingSources: effectiveSettingSources as SettingSource[] } : {}),
 			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 			...makeCliDebugOptions("sidequery"),
@@ -1210,7 +1209,6 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	if (strictMcpConfigEnabled) extraArgs["strict-mcp-config"] = null;
 	// Opus 4.7 defaults thinking.display to "omitted" (empty thinking text in stream).
 	// Force summarized so thinking_delta events arrive. See anthropics/claude-agent-sdk-python#830.
-	if (effort) extraArgs["thinking-display"] = "summarized";
 
 	// Suppress claude.ai cloud MCP servers (Figma/Canva/etc. auto-discovered via OAuth
 	// when the user is logged into Anthropic). These are a separate code path from
@@ -1233,7 +1231,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			? { type: "preset", preset: "claude_code", append: systemPromptContent }
 			: systemPromptContent ?? "",
 		extraArgs,
-		...(effort ? { effort } : {}),
+		...(effort ? { effort, thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
 		...(effectiveSettingSources ? { settingSources: effectiveSettingSources } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
@@ -1461,7 +1459,7 @@ async function promptAndWait(
 		"strict-mcp-config": null,
 		model: modelId,
 	};
-	if (effort) extraArgs["thinking-display"] = "summarized";
+
 
 	debug("askClaude:",
 		`mode=${mode} model=${modelId} effort=${effort ?? "default"}`,
@@ -1475,7 +1473,7 @@ async function promptAndWait(
 			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
 			permissionMode: "bypassPermissions",
 			...(disallowedTools.length ? { disallowedTools } : {}),
-			...(effort ? { effort } : {}),
+			...(effort ? { effort, thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
 			systemPrompt: systemPromptMode === "append"
 				? { type: "preset", preset: "claude_code", append: skillsBlock }
 				: skillsBlock,
