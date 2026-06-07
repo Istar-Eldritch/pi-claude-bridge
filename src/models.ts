@@ -15,11 +15,12 @@ export const MODEL_IDS_IN_ORDER = [
 // Key: model id, Value: partial model fields to override after the find.
 // See https://github.com/elidickinson/pi-claude-bridge/issues/22
 const MODEL_OVERRIDES: Record<string, Record<string, any>> = {
-	// 4-8's 1M window is gated behind a Claude Code Statsig experiment
-	// (tengu_amber_redwood2) that is NOT active on the headless/SDK transport.
-	// The server caps it at 200K there. Advertising 1M would prevent pi from
-	// compacting, leading to "Prompt is too long" server-side rejections.
+	// These models advertise a 1M context window in pi-ai, but the CC SDK
+	// (headless/SDK) transport caps them at 200K. Advertising 1M would prevent
+	// pi from compacting, leading to "Prompt is too long" server-side rejections.
+	// See https://github.com/elidickinson/pi-claude-bridge/issues/22
 	"claude-opus-4-8": { contextWindow: 200_000 },
+	"claude-sonnet-4-6": { contextWindow: 200_000 },
 };
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
