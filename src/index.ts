@@ -476,6 +476,9 @@ function mapToolArgs(
 
 // Global (not query state):
 let piUI: ExtensionUIContext | null = null;
+// Set when a CC query completes normally; cleared by session_compact. Lets us
+// distinguish pi auto-compaction (follows a completed turn) from manual /compact.
+let pendingAutoCompact = false;
 
 function resolveMcpTools(context: Context, excludeToolName?: string): {
 	mcpTools: Tool[];
@@ -1351,6 +1354,8 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// and hand the summarization request a stream nothing finalizes -> hang.
 			// Reentrant queries are left for the outer .finally() to pop.
 			if (!isReentrant) ctx().activeQuery = null;
+			// Signal to session_compact that this compact was auto-triggered (not manual).
+			if (!isReentrant && !wasAborted) pendingAutoCompact = true;
 			finalizeCurrentStream(ctx().turnOutput?.stopReason);
 		})
 		.catch((error) => {
@@ -1612,7 +1617,24 @@ export default function (pi: ExtensionAPI) {
 			sharedSession = { ...sharedSession, needsRebuild: true };
 		}
 	};
-	pi.on("session_compact", () => markRebuild("session_compact"));
+	pi.on("session_compact", (_event, _ctx) => {
+		markRebuild("session_compact");
+		// After compaction the agent is always idle (the turn that triggered compaction
+		// has already ended). In bridge/remote-control mode the bridge worker will NOT
+		// automatically inject a new prompt — it only respawns the subprocess when new
+		// messages arrive from claude.ai. Without a nudge the conversation stalls.
+		// Inject a follow-up so the agent picks up where it left off.
+		if (!pendingAutoCompact) {
+			debug("session_compact: manual compact, skipping auto-continue");
+			return;
+		}
+		pendingAutoCompact = false;
+		debug("session_compact: injecting continue after auto-compaction");
+		pi.sendUserMessage(
+			"The conversation context was just compacted. Continue the task from where you left off based on the compaction summary.",
+			{ deliverAs: "followUp" },
+		);
+	});
 	pi.on("session_tree", () => markRebuild("session_tree"));
 
 	// --- Provider ---
