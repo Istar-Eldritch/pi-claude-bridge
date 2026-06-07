@@ -28,13 +28,6 @@ export interface Config {
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
-		/**
-		 * Enable the 1M token context window for supported models (Sonnet 4.x).
-		 * Passes `betas: ["context-1m-2025-08-07"]` to the Claude Code SDK and
-		 * advertises 1M context to pi so it compacts at the right threshold.
-		 * Default: false (200K effective limit via CC SDK transport).
-		 */
-		use1MContext?: boolean;
 	};
 }
 

@@ -7,40 +7,55 @@ export const MODEL_IDS_IN_ORDER = [
 	"claude-opus-4-7",
 	"claude-opus-4-6",
 	"claude-sonnet-4-6",
+	// 1M context variants: Claude Code uses the "[1m]" suffix in the model ID to
+	// route to the 1M context window entitlement. These are NOT beta-header tricks —
+	// the CC binary has explicit model-ID checks (includes("[1m]")) that gate the
+	// extended window. The underlying Anthropic API model is the same; only the
+	// CC subprocess's internal context-management limit changes.
+	"claude-sonnet-4-6[1m]",
 	"claude-haiku-4-5",
 ];
 
 // Per-model field overrides for cases where the pi-ai registry value doesn't
 // match the effective limit on the headless/SDK transport we use.
 // Key: model id, Value: partial model fields to override after the find.
-// When use1MContext is enabled, models that support 1M are left at their
-// advertised window so pi compacts at the correct (higher) threshold.
-const MODEL_OVERRIDES_200K: Record<string, Record<string, any>> = {
-	// These models advertise a 1M context window in pi-ai, but the CC SDK
-	// (headless/SDK) transport caps them at 200K by default.
-	// Advertising 1M without the beta would prevent pi from compacting,
-	// leading to "Prompt is too long" server-side rejections.
+const MODEL_OVERRIDES: Record<string, Record<string, any>> = {
+	// opus-4-8 and sonnet-4-6 advertise 1M in pi-ai, but the CC subprocess's
+	// default context-management caps them at 200K (you need the [1m] model
+	// variant to get 1M). Without this override pi won't compact in time and
+	// CC returns "Prompt is too long".
 	"claude-opus-4-8": { contextWindow: 200_000 },
 	"claude-sonnet-4-6": { contextWindow: 200_000 },
+	// [1m] variants: synthesised entries (not in pi-ai); we supply all fields
+	// manually via MODEL_1M_ENTRIES below.
 };
 
-// Models that support 1M context via context-1m-2025-08-07 beta.
-const MODELS_WITH_1M_SUPPORT = new Set(["claude-sonnet-4-6"]);
+// Synthesised model entries for CC's [1m] model-ID variants.
+// These aren't in pi-ai; we construct them by copying the base model and
+// patching the id, name, and contextWindow.
+const MODEL_1M_ENTRIES: Record<string, { id: string; name: string; contextWindow: number }> = {
+	"claude-sonnet-4-6[1m]": {
+		id: "claude-sonnet-4-6[1m]",
+		name: "Claude Sonnet 4.6 (1M)",
+		contextWindow: 1_000_000,
+	},
+};
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
-// and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai are silently dropped.
+// and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai AND MODEL_1M_ENTRIES
+// are silently dropped.
 export function buildModels<T extends { id: string; [key: string]: any }>(
 	piAiModels: T[],
-	{ use1MContext = false }: { use1MContext?: boolean } = {},
 ) {
 	return (
 		MODEL_IDS_IN_ORDER.map((id) => {
-			const found = piAiModels.find((m) => m.id === id);
+			// Synthesised 1M entry — not in pi-ai
+			const synth = MODEL_1M_ENTRIES[id];
+			const found = synth
+				? ({ ...piAiModels.find((m) => m.id === id.replace(/\[1m\]$/, "")), ...synth } as T)
+				: piAiModels.find((m) => m.id === id);
 			if (!found) return undefined;
-			// Skip the 200K cap override for models that have 1M support when
-			// the user has opted in, so pi compacts at the correct threshold.
-			const skip1MCap = use1MContext && MODELS_WITH_1M_SUPPORT.has(id);
-			const overrides = skip1MCap ? undefined : MODEL_OVERRIDES_200K[id];
+			const overrides = MODEL_OVERRIDES[id];
 			return overrides ? ({ ...found, ...overrides } as T) : found;
 		})
 			.filter((m) => m != null)
