@@ -116,7 +116,12 @@ const SDK_TO_PI_TOOL_NAME: Record<string, string> = {
 };
 
 // MODELS is buildModels(getModels("anthropic")) — projection kept in models.js.
-const MODELS = buildModels(getModels("anthropic"));
+// Read use1MContext from the global config at startup so pi advertises the
+// correct context window (1M vs 200K) from the first registered model list.
+const STARTUP_CONFIG = loadConfig(process.cwd());
+const MODELS = buildModels(getModels("anthropic"), {
+	use1MContext: STARTUP_CONFIG.provider?.use1MContext ?? false,
+});
 
 function resolveModelId(input: string): string {
 	return _resolveModelId(MODELS, input);
@@ -1238,6 +1243,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+		...(providerSettings.use1MContext ? { betas: ["context-1m-2025-08-07" as const] } : {}),
 		...makeCliDebugOptions("provider"),
 	};
 

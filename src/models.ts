@@ -13,26 +13,34 @@ export const MODEL_IDS_IN_ORDER = [
 // Per-model field overrides for cases where the pi-ai registry value doesn't
 // match the effective limit on the headless/SDK transport we use.
 // Key: model id, Value: partial model fields to override after the find.
-// See https://github.com/elidickinson/pi-claude-bridge/issues/22
-const MODEL_OVERRIDES: Record<string, Record<string, any>> = {
+// When use1MContext is enabled, models that support 1M are left at their
+// advertised window so pi compacts at the correct (higher) threshold.
+const MODEL_OVERRIDES_200K: Record<string, Record<string, any>> = {
 	// These models advertise a 1M context window in pi-ai, but the CC SDK
-	// (headless/SDK) transport caps them at 200K. Advertising 1M would prevent
-	// pi from compacting, leading to "Prompt is too long" server-side rejections.
-	// See https://github.com/elidickinson/pi-claude-bridge/issues/22
+	// (headless/SDK) transport caps them at 200K by default.
+	// Advertising 1M without the beta would prevent pi from compacting,
+	// leading to "Prompt is too long" server-side rejections.
 	"claude-opus-4-8": { contextWindow: 200_000 },
 	"claude-sonnet-4-6": { contextWindow: 200_000 },
 };
+
+// Models that support 1M context via context-1m-2025-08-07 beta.
+const MODELS_WITH_1M_SUPPORT = new Set(["claude-sonnet-4-6"]);
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
 // and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai are silently dropped.
 export function buildModels<T extends { id: string; [key: string]: any }>(
 	piAiModels: T[],
+	{ use1MContext = false }: { use1MContext?: boolean } = {},
 ) {
 	return (
 		MODEL_IDS_IN_ORDER.map((id) => {
 			const found = piAiModels.find((m) => m.id === id);
 			if (!found) return undefined;
-			const overrides = MODEL_OVERRIDES[id];
+			// Skip the 200K cap override for models that have 1M support when
+			// the user has opted in, so pi compacts at the correct threshold.
+			const skip1MCap = use1MContext && MODELS_WITH_1M_SUPPORT.has(id);
+			const overrides = skip1MCap ? undefined : MODEL_OVERRIDES_200K[id];
 			return overrides ? ({ ...found, ...overrides } as T) : found;
 		})
 			.filter((m) => m != null)
