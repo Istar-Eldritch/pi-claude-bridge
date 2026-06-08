@@ -556,6 +556,23 @@ const REASONING_TO_EFFORT: Record<string, EffortLevel> = {
 	minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "max",
 };
 
+// Build the SDK thinking/effort options from pi's reasoning level.
+// - "off"            → explicitly disable thinking (zero reasoning tokens).
+// - a real effort   → adaptive thinking at that budget, with summarized
+//                      display so thinking_delta events arrive (see #830).
+// - anything else   → omit entirely so CC uses its own default thinking.
+function buildThinkingOptions(
+	reasoning: string | undefined,
+	effort: EffortLevel | undefined,
+):
+	| { thinking: { type: "disabled" } }
+	| { effort: EffortLevel; thinking: { type: "adaptive"; display: "summarized" } }
+	| Record<string, never> {
+	if (reasoning === "off") return { thinking: { type: "disabled" as const } };
+	if (effort) return { effort, thinking: { type: "adaptive" as const, display: "summarized" as const } };
+	return {};
+}
+
 // --- Provider helpers: misc ---
 
 function mapStopReason(reason: string | undefined): "stop" | "length" | "toolUse" {
@@ -901,7 +918,7 @@ function runIsolatedSideQuery(
 				? { type: "preset", preset: "claude_code", append: systemPromptContent }
 				: systemPromptContent ?? "",
 			extraArgs,
-			...(effort ? { effort, thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
+			...buildThinkingOptions(options?.reasoning, effort),
 			...(effectiveSettingSources ? { settingSources: effectiveSettingSources as SettingSource[] } : {}),
 			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 			...makeCliDebugOptions("sidequery"),
@@ -1231,7 +1248,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			? { type: "preset", preset: "claude_code", append: systemPromptContent }
 			: systemPromptContent ?? "",
 		extraArgs,
-		...(effort ? { effort, thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
+		...buildThinkingOptions(options?.reasoning, effort),
 		...(effectiveSettingSources ? { settingSources: effectiveSettingSources } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
@@ -1473,7 +1490,7 @@ async function promptAndWait(
 			env: { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" },
 			permissionMode: "bypassPermissions",
 			...(disallowedTools.length ? { disallowedTools } : {}),
-			...(effort ? { effort, thinking: { type: "adaptive" as const, display: "summarized" as const } } : {}),
+			...buildThinkingOptions(options?.thinking, effort),
 			systemPrompt: systemPromptMode === "append"
 				? { type: "preset", preset: "claude_code", append: skillsBlock }
 				: skillsBlock,
