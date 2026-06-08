@@ -48,8 +48,8 @@ describe("MODELS projection", () => {
 	});
 
 	it("drops IDs with no pi-ai entry and no synthetic base", () => {
-		// Only haiku present — opus/sonnet vanish; 4-8 is NOT synthesized
-		// because pi-ai 0.78+ defines it officially.
+		// [1m] variants are synthesised from their base model. With only haiku
+		// present, the [1m] entries have no base to spread from and are dropped.
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
 		assert.deepEqual(
 			models.map((m) => m.id),
@@ -57,21 +57,28 @@ describe("MODELS projection", () => {
 		);
 	});
 
-	it("applies 200K contextWindow override for claude-opus-4-8", () => {
-		// pi-ai 0.78 defines 4-8 with contextWindow: 1_000_000, but the
-		// effective limit on the headless/SDK transport is 200K (gated behind
-		// CC Statsig experiment tengu_amber_redwood2). The MODEL_OVERRIDES
-		// patch ensures pi compacts at the correct threshold.
-		// See issue #22.
-		const v48 = mockPiAiModel("claude-opus-4-8");
-		v48.contextWindow = 1_000_000;
-		const v47 = mockPiAiModel("claude-opus-4-7");
-		v47.contextWindow = 1_000_000;
-		const models = buildModels([v48, v47]);
-		const found48 = models.find((m) => m.id === "claude-opus-4-8");
-		const found47 = models.find((m) => m.id === "claude-opus-4-7");
-		assert.equal(found48.contextWindow, 200_000); // overridden
-		assert.equal(found47.contextWindow, 1_000_000); // untouched
+	it("[1m] variants are synthesised when base model is present", () => {
+		const base48 = mockPiAiModel("claude-opus-4-8");
+		base48.contextWindow = 1_000_000;
+		const models = buildModels([base48]);
+		const ids = models.map((m) => m.id);
+		assert.ok(ids.includes("claude-opus-4-8[1m]"), "[1m] variant present");
+		const m1m = models.find((m) => m.id === "claude-opus-4-8[1m]");
+		assert.equal(m1m.contextWindow, 1_000_000);
+		assert.equal(m1m.name, "Claude Opus 4.8 (1M)");
+	});
+
+	it("applies 200K override for models capped by CC Qv() on API key auth", () => {
+		// CC's Qv() returns WD6=200K for API-key auth on opus-4-8, opus-4-6, and
+		// sonnet-4-6. pi-ai advertises 1M for these; MODEL_OVERRIDES caps them to
+		// match CC's actual behaviour so pi compacts at the right threshold.
+		// opus-4-7 is not overridden — CC falls through to its full API window.
+		const make1M = (id) => { const m = mockPiAiModel(id); m.contextWindow = 1_000_000; return m; };
+		const models = buildModels(["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"].map(make1M));
+		assert.equal(models.find((m) => m.id === "claude-opus-4-8").contextWindow,   200_000);
+		assert.equal(models.find((m) => m.id === "claude-opus-4-7").contextWindow, 1_000_000); // untouched
+		assert.equal(models.find((m) => m.id === "claude-opus-4-6").contextWindow,   200_000);
+		assert.equal(models.find((m) => m.id === "claude-sonnet-4-6").contextWindow, 200_000);
 	});
 
 	it("zeros out cost regardless of pi-ai pricing", () => {

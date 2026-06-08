@@ -72,12 +72,13 @@ export function buildModels<T extends { id: string; [key: string]: any }>(
 		MODEL_IDS_IN_ORDER.map((id) => {
 			// Synthesised 1M entry — not in pi-ai
 			const synth = MODEL_1M_ENTRIES[id];
-			const found = synth
-				? ({
-						...piAiModels.find((m) => m.id === id.replace(/\[1m\]$/, "")),
-						...synth,
-					} as T)
-				: piAiModels.find((m) => m.id === id);
+			if (synth) {
+				// [1m] entry: only synthesise if the base model exists in pi-ai
+				const base = piAiModels.find((m) => m.id === id.replace(/\[1m\]$/, ""));
+				if (!base) return undefined;
+				return { ...base, ...synth } as T;
+			}
+			const found = piAiModels.find((m) => m.id === id);
 			if (!found) return undefined;
 			const overrides = MODEL_OVERRIDES[id];
 			return overrides ? ({ ...found, ...overrides } as T) : found;
