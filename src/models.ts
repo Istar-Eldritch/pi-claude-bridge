@@ -4,18 +4,20 @@
 
 export const MODEL_IDS_IN_ORDER = [
 	"claude-opus-4-8",
+	"claude-opus-4-8[1m]",
 	"claude-opus-4-7",
 	"claude-opus-4-6",
 	"claude-opus-4-6[1m]",
 	"claude-sonnet-4-6",
 	// 1M context variants: Claude Code uses the "[1m]" suffix in the model ID to
-	// route to the 1M context window. The CC binary's kn() function has an explicit
-	// 200K model-default set (q4A) for sonnet-4-6 and opus-4-6; the [1m] suffix
-	// bypasses that and lets the full API window through. These are NOT beta-header
-	// tricks — the underlying Anthropic model ID sent to the API is the same.
+	// route to the 1M context window. The CC binary's Qv() function returns 1M when
+	// rZ(model) is true (i.e. model ID contains "[1m]"). Without the suffix, Qv()
+	// falls through to WD6=200_000 for API-key auth — the 1M path (O$H) only fires
+	// for firstParty OAuth, AWS Bedrock, or Mantle plans.
 	//
-	// opus-4-7 and opus-4-8 are NOT in CC's 200K q4A set, so they already use
-	// the full API context window (1M) by default — no [1m] suffix needed for them.
+	// opus-4-7 is NOT capped: it falls through to the full API window because it is
+	// neither in q4A (200K model-defaults) nor returned by Pq8(). Adding [1m] for it
+	// would be redundant but harmless if ever needed.
 	"claude-sonnet-4-6[1m]",
 	"claude-haiku-4-5",
 ];
@@ -24,13 +26,14 @@ export const MODEL_IDS_IN_ORDER = [
 // match the effective limit on the headless/SDK transport we use.
 // Key: model id, Value: partial model fields to override after the find.
 const MODEL_OVERRIDES: Record<string, Record<string, any>> = {
-	// sonnet-4-6 and opus-4-6 are in CC's internal q4A set which applies a 200K
-	// model-default context window. pi-ai advertises 1M for both, so we cap them
-	// here to match CC's actual behaviour; otherwise pi won't compact in time and
-	// CC returns "Prompt is too long". Use the [1m] model variants for true 1M.
-	//
-	// opus-4-7 and opus-4-8 are NOT in q4A — CC falls through to the full API
-	// window (1M) for them, so no override is needed.
+	// CC's Qv() returns 200K (WD6) for API-key auth on all models except those
+	// accessed via OAuth firstParty, Bedrock, or Mantle. In practice every model
+	// the bridge uses needs this 200K cap unless the [1m] variant is selected.
+	// (opus-4-7 is exempted: CC's Qv() falls to the full API window for it, not
+	// WD6, because it matches neither q4A nor Pq8() and O$H returns true for
+	// opus-4-7 on firstParty — but on API key it would also fall to WD6. TODO:
+	// verify opus-4-7 actual limit and add override + [1m] variant if needed.)
+	"claude-opus-4-8": { contextWindow: 200_000 },
 	"claude-sonnet-4-6": { contextWindow: 200_000 },
 	"claude-opus-4-6": { contextWindow: 200_000 },
 };
@@ -42,6 +45,11 @@ const MODEL_1M_ENTRIES: Record<
 	string,
 	{ id: string; name: string; contextWindow: number }
 > = {
+	"claude-opus-4-8[1m]": {
+		id: "claude-opus-4-8[1m]",
+		name: "Claude Opus 4.8 (1M)",
+		contextWindow: 1_000_000,
+	},
 	"claude-sonnet-4-6[1m]": {
 		id: "claude-sonnet-4-6[1m]",
 		name: "Claude Sonnet 4.6 (1M)",
