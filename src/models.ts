@@ -68,38 +68,23 @@ const MODEL_1M_ENTRIES: Record<
 	},
 };
 
-// Synthetic base models for entries not yet shipped in pi-ai.
-// Key: missing model id. Value: donor model id to clone.
-const SYNTHETIC_BASE_MODELS: Record<string, string> = {
-	"claude-fable-5": "claude-opus-4-8",
-};
-
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
 // and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai AND MODEL_1M_ENTRIES
 // are silently dropped.
 export function buildModels<T extends { id: string; [key: string]: any }>(
 	piAiModels: T[],
 ) {
-	// Augment with synthetic base models so new models work before pi-ai ships them.
-	const augmented = [...piAiModels];
-	for (const [syntheticId, donorId] of Object.entries(SYNTHETIC_BASE_MODELS)) {
-		if (augmented.some((m) => m.id === syntheticId)) continue;
-		const donor = augmented.find((m) => m.id === donorId);
-		if (donor)
-			augmented.push({ ...donor, id: syntheticId, name: syntheticId } as T);
-	}
-
 	return (
 		MODEL_IDS_IN_ORDER.map((id) => {
 			// Synthesised 1M entry — not in pi-ai
 			const synth = MODEL_1M_ENTRIES[id];
 			if (synth) {
-				// [1m] entry: only synthesise if the base model exists in pi-ai or synth base
-				const base = augmented.find((m) => m.id === id.replace(/\[1m\]$/, ""));
+				// [1m] entry: only synthesise if the base (non-[1m]) model is in pi-ai.
+				const base = piAiModels.find((m) => m.id === id.replace(/\[1m\]$/, ""));
 				if (!base) return undefined;
 				return { ...base, ...synth } as T;
 			}
-			const found = augmented.find((m) => m.id === id);
+			const found = piAiModels.find((m) => m.id === id);
 			if (!found) return undefined;
 			const overrides = MODEL_OVERRIDES[id];
 			return overrides ? ({ ...found, ...overrides } as T) : found;

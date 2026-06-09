@@ -28,9 +28,15 @@ const mockPiAiModel = (id) => ({
 	headers: { "x-api-key": "LEAK" },
 });
 
+// pi-ai only ever ships base (non-[1m]) model ids; the bridge synthesises the
+// [1m] variants. Mirror that here so [1m] entries have a real base to clone.
+const PI_AI_MODEL_IDS = [
+	...new Set(MODEL_IDS_IN_ORDER.map((id) => id.replace(/\[1m\]$/, ""))),
+];
+
 describe("MODELS projection", () => {
 	it("strips baseUrl/api/provider/headers", () => {
-		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		const models = buildModels(PI_AI_MODEL_IDS.map(mockPiAiModel));
 		for (const m of models) {
 			assert.equal(m.baseUrl, undefined);
 			assert.equal(m.api, undefined);
@@ -40,14 +46,14 @@ describe("MODELS projection", () => {
 	});
 
 	it("preserves MODEL_IDS_IN_ORDER ordering", () => {
-		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		const models = buildModels(PI_AI_MODEL_IDS.map(mockPiAiModel));
 		assert.deepEqual(
 			models.map((m) => m.id),
 			MODEL_IDS_IN_ORDER,
 		);
 	});
 
-	it("drops IDs with no pi-ai entry and no synthetic base", () => {
+	it("drops IDs with no pi-ai entry and no synthesisable base", () => {
 		// [1m] variants are synthesised from their base model. With only haiku
 		// present, the [1m] entries have no base to spread from and are dropped.
 		const models = buildModels([mockPiAiModel("claude-haiku-4-5")]);
@@ -68,11 +74,12 @@ describe("MODELS projection", () => {
 		assert.equal(m1m.name, "Claude Opus 4.8 (1M)");
 	});
 
-	it("synthesises [1m] variant from synthetic base when pi-ai lacks the model", () => {
-		// claude-fable-5 is not in pi-ai yet; the bridge clones claude-opus-4-8 as a donor.
-		const base48 = mockPiAiModel("claude-opus-4-8");
-		base48.contextWindow = 1_000_000;
-		const models = buildModels([base48]);
+	it("synthesises claude-fable-5[1m] from the native pi-ai fable-5 base", () => {
+		// pi-ai now ships claude-fable-5 (1M) natively; the [1m] variant is the
+		// id-suffixed clone the CC binary needs to route to its 1M context window.
+		const fable = mockPiAiModel("claude-fable-5");
+		fable.contextWindow = 1_000_000;
+		const models = buildModels([fable]);
 		const ids = models.map((m) => m.id);
 		assert.ok(ids.includes("claude-fable-5[1m]"), "fable [1m] variant present");
 		const m1m = models.find((m) => m.id === "claude-fable-5[1m]");
@@ -117,7 +124,7 @@ describe("MODELS projection", () => {
 	});
 
 	it("zeros out cost regardless of pi-ai pricing", () => {
-		const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+		const models = buildModels(PI_AI_MODEL_IDS.map(mockPiAiModel));
 		for (const m of models) {
 			assert.deepEqual(m.cost, {
 				input: 0,
@@ -130,7 +137,7 @@ describe("MODELS projection", () => {
 });
 
 describe("resolveModelId", () => {
-	const models = buildModels(MODEL_IDS_IN_ORDER.map(mockPiAiModel));
+	const models = buildModels(PI_AI_MODEL_IDS.map(mockPiAiModel));
 
 	it("opus shortcut resolves to claude-opus-4-8 (first opus in order)", () => {
 		assert.equal(resolveModelId(models, "opus"), "claude-opus-4-8");
