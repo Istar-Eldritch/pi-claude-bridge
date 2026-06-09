@@ -68,17 +68,52 @@ describe("MODELS projection", () => {
 		assert.equal(m1m.name, "Claude Opus 4.8 (1M)");
 	});
 
+	it("synthesises [1m] variant from synthetic base when pi-ai lacks the model", () => {
+		// claude-fable-5 is not in pi-ai yet; the bridge clones claude-opus-4-8 as a donor.
+		const base48 = mockPiAiModel("claude-opus-4-8");
+		base48.contextWindow = 1_000_000;
+		const models = buildModels([base48]);
+		const ids = models.map((m) => m.id);
+		assert.ok(ids.includes("claude-fable-5[1m]"), "fable [1m] variant present");
+		const m1m = models.find((m) => m.id === "claude-fable-5[1m]");
+		assert.equal(m1m.contextWindow, 1_000_000);
+		assert.equal(m1m.name, "Claude Fable 5 (1M)");
+	});
+
 	it("applies 200K override for models capped by CC Qv() on API key auth", () => {
 		// CC's Qv() returns WD6=200K for API-key auth on opus-4-8, opus-4-6, and
 		// sonnet-4-6. pi-ai advertises 1M for these; MODEL_OVERRIDES caps them to
 		// match CC's actual behaviour so pi compacts at the right threshold.
 		// opus-4-7 is not overridden — CC falls through to its full API window.
-		const make1M = (id) => { const m = mockPiAiModel(id); m.contextWindow = 1_000_000; return m; };
-		const models = buildModels(["claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"].map(make1M));
-		assert.equal(models.find((m) => m.id === "claude-opus-4-8").contextWindow,   200_000);
-		assert.equal(models.find((m) => m.id === "claude-opus-4-7").contextWindow, 1_000_000); // untouched
-		assert.equal(models.find((m) => m.id === "claude-opus-4-6").contextWindow,   200_000);
-		assert.equal(models.find((m) => m.id === "claude-sonnet-4-6").contextWindow, 200_000);
+		const make1M = (id) => {
+			const m = mockPiAiModel(id);
+			m.contextWindow = 1_000_000;
+			return m;
+		};
+		const models = buildModels(
+			[
+				"claude-opus-4-8",
+				"claude-opus-4-7",
+				"claude-opus-4-6",
+				"claude-sonnet-4-6",
+			].map(make1M),
+		);
+		assert.equal(
+			models.find((m) => m.id === "claude-opus-4-8").contextWindow,
+			200_000,
+		);
+		assert.equal(
+			models.find((m) => m.id === "claude-opus-4-7").contextWindow,
+			1_000_000,
+		); // untouched
+		assert.equal(
+			models.find((m) => m.id === "claude-opus-4-6").contextWindow,
+			200_000,
+		);
+		assert.equal(
+			models.find((m) => m.id === "claude-sonnet-4-6").contextWindow,
+			200_000,
+		);
 	});
 
 	it("zeros out cost regardless of pi-ai pricing", () => {
@@ -103,6 +138,10 @@ describe("resolveModelId", () => {
 
 	it("haiku shortcut resolves to claude-haiku-4-5", () => {
 		assert.equal(resolveModelId(models, "haiku"), "claude-haiku-4-5");
+	});
+
+	it("fable shortcut resolves to claude-fable-5[1m]", () => {
+		assert.equal(resolveModelId(models, "fable"), "claude-fable-5[1m]");
 	});
 
 	it("full ID passes through unchanged", () => {
