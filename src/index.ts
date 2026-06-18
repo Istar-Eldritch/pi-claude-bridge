@@ -476,9 +476,15 @@ function mapToolArgs(
 
 // Global (not query state):
 let piUI: ExtensionUIContext | null = null;
-// Set when a CC query completes normally; cleared by session_compact. Lets us
+// Set when a CC query completes normally; cleared by agent_end + setImmediate when no
+// side query started, or by session_compact when auto-compaction fires. Lets us
 // distinguish pi auto-compaction (follows a completed turn) from manual /compact.
+// Auto-compact's side query starts in the microtask chain right after agent_end,
+// so activeSideQueryCount > 0 when the setImmediate fires, preventing the reset.
 let pendingAutoCompact = false;
+// Tracks in-flight side queries (compaction summaries, branch summaries).
+// Incremented synchronously in runIsolatedSideQuery before any async work.
+let activeSideQueryCount = 0;
 
 function resolveMcpTools(context: Context, excludeToolName?: string): {
 	mcpTools: Tool[];
@@ -877,6 +883,7 @@ function runIsolatedSideQuery(
 	options: SimpleStreamOptions | undefined,
 	stream: AssistantMessageEventStream,
 ): void {
+	activeSideQueryCount++;
 	const cwd = (options as { cwd?: string } | undefined)?.cwd ?? process.cwd();
 	const providerSettings = loadConfig(cwd).provider ?? {};
 	const systemPromptMode = resolveSystemPromptMode(providerSettings);
@@ -1021,6 +1028,7 @@ function runIsolatedSideQuery(
 		} finally {
 			if (options?.signal) options.signal.removeEventListener("abort", onAbort);
 			try { sdkQuery.close(); } catch {}
+			activeSideQueryCount--;
 		}
 	})();
 }
@@ -1632,6 +1640,21 @@ export default function (pi: ExtensionAPI) {
 			sharedSession = { ...sharedSession, needsRebuild: true };
 		}
 	};
+	// When the agent loop ends without triggering auto-compaction, clear the
+	// pendingAutoCompact flag so a subsequent manual /compact doesn't incorrectly
+	// inject a continue message. We defer via setImmediate because auto-compact's
+	// side query starts in the microtask chain right after agent_end (before any
+	// I/O event), so activeSideQueryCount will be > 0 by the time setImmediate
+	// fires — preventing the reset in the auto-compact case.
+	pi.on("agent_end", () => {
+		setImmediate(() => {
+			if (activeSideQueryCount === 0) {
+				debug("agent_end: no side query started after turn, clearing stale pendingAutoCompact");
+				pendingAutoCompact = false;
+			}
+		});
+	});
+
 	pi.on("session_compact", (_event, _ctx) => {
 		markRebuild("session_compact");
 		// After compaction the agent is always idle (the turn that triggered compaction
