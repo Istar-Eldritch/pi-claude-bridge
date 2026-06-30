@@ -9,6 +9,9 @@ export const MODEL_IDS_IN_ORDER = [
 	"claude-opus-4-7",
 	"claude-opus-4-6",
 	"claude-opus-4-6[1m]",
+	// Listed before sonnet-4-6 so the "sonnet" shortcut resolves to the newest sonnet.
+	"claude-sonnet-5",
+	"claude-sonnet-5[1m]",
 	"claude-sonnet-4-6",
 	// 1M context variants: Claude Code uses the "[1m]" suffix in the model ID to
 	// route to the 1M context window. The CC binary's Qv() function returns 1M when
@@ -35,6 +38,7 @@ const MODEL_OVERRIDES: Record<string, Record<string, any>> = {
 	// opus-4-7 on firstParty — but on API key it would also fall to WD6. TODO:
 	// verify opus-4-7 actual limit and add override + [1m] variant if needed.)
 	"claude-opus-4-8": { contextWindow: 200_000 },
+	"claude-sonnet-5": { contextWindow: 200_000 },
 	"claude-sonnet-4-6": { contextWindow: 200_000 },
 	"claude-opus-4-6": { contextWindow: 200_000 },
 };
@@ -66,6 +70,19 @@ const MODEL_1M_ENTRIES: Record<
 		name: "Claude Fable 5 (1M)",
 		contextWindow: 1_000_000,
 	},
+	"claude-sonnet-5[1m]": {
+		id: "claude-sonnet-5[1m]",
+		name: "Claude Sonnet 5 (1M)",
+		contextWindow: 1_000_000,
+	},
+};
+
+// Synthetic base models for entries not yet shipped in pi-ai.
+// Key: missing model id. Value: donor model id to clone (cloned fields are then
+// patched with id/name; contextWindow is corrected by MODEL_OVERRIDES if needed).
+// Remove an entry once pi-ai ships the model natively (see git history for fable-5).
+const SYNTHETIC_BASE_MODELS: Record<string, { donor: string; name: string }> = {
+	"claude-sonnet-5": { donor: "claude-sonnet-4-6", name: "Claude Sonnet 5" },
 };
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
@@ -74,17 +91,29 @@ const MODEL_1M_ENTRIES: Record<
 export function buildModels<T extends { id: string; [key: string]: any }>(
 	piAiModels: T[],
 ) {
+	// Augment with synthetic base models so new models work before pi-ai ships them.
+	const augmented = [...piAiModels];
+	for (const [syntheticId, { donor, name }] of Object.entries(
+		SYNTHETIC_BASE_MODELS,
+	)) {
+		if (augmented.some((m) => m.id === syntheticId)) continue;
+		const donorModel = augmented.find((m) => m.id === donor);
+		if (donorModel)
+			augmented.push({ ...donorModel, id: syntheticId, name } as T);
+	}
+
 	return (
 		MODEL_IDS_IN_ORDER.map((id) => {
 			// Synthesised 1M entry — not in pi-ai
 			const synth = MODEL_1M_ENTRIES[id];
 			if (synth) {
-				// [1m] entry: only synthesise if the base (non-[1m]) model is in pi-ai.
-				const base = piAiModels.find((m) => m.id === id.replace(/\[1m\]$/, ""));
+				// [1m] entry: only synthesise if the base (non-[1m]) model is present
+				// (either shipped by pi-ai or via SYNTHETIC_BASE_MODELS).
+				const base = augmented.find((m) => m.id === id.replace(/\[1m\]$/, ""));
 				if (!base) return undefined;
 				return { ...base, ...synth } as T;
 			}
-			const found = piAiModels.find((m) => m.id === id);
+			const found = augmented.find((m) => m.id === id);
 			if (!found) return undefined;
 			const overrides = MODEL_OVERRIDES[id];
 			return overrides ? ({ ...found, ...overrides } as T) : found;
