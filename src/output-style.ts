@@ -57,10 +57,18 @@ const ensuredNames = new Set<string>();
  * Ensure an output style containing `body` exists; return its name, or
  * undefined when body is empty or any fs operation fails (caller degrades
  * to plain "append" behavior — never throws).
+ *
+ * `onGc`, if provided, is invoked with the count whenever the internal GC
+ * sweep actually deletes something (never on a 0-deletion sweep). This module
+ * deliberately has no logger dependency of its own (so tests can import it
+ * without activating the extension) — `onGc` lets a caller with a logger
+ * (index.ts's `debug()`) observe GC activity without coupling this module to
+ * it directly.
  */
 export function ensureOutputStyle(
 	body: string | undefined,
 	dir = defaultOutputStylesDir(),
+	onGc?: (deletedCount: number) => void,
 ): string | undefined {
 	if (!body || body.trim().length === 0) return undefined;
 	const name = outputStyleName(body);
@@ -85,7 +93,8 @@ export function ensureOutputStyle(
 			renameSync(tmp, target); // atomic; content-addressed so any winner is identical
 		}
 		ensuredNames.add(cacheKey);
-		gcStaleStyles(dir); // best-effort, inside the try
+		const deleted = gcStaleStyles(dir); // best-effort, inside the try
+		if (deleted > 0) onGc?.(deleted);
 		return name;
 	} catch {
 		return undefined;

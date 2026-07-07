@@ -148,6 +148,34 @@ describe("ensureOutputStyle", () => {
 		});
 	});
 
+	it("onGc callback fires with the deleted count only when the internal GC sweep actually deletes something", () => {
+		const dir = makeTmpDir();
+
+		// Plant a stale, unrelated pi-bridge- style file for the GC sweep to find.
+		const staleFile = join(dir, "pi-bridge-cccccccccccccccc.md");
+		writeFileSync(staleFile, "stale");
+		const staleTime = new Date(Date.now() - 1000 * 60 * 60 * 24 * 40); // 40 days ago
+		utimesSync(staleFile, staleTime, staleTime);
+
+		const calls = [];
+		ensureOutputStyle("fresh body triggers gc", dir, (deleted) => calls.push(deleted));
+
+		assert.strictEqual(existsSync(staleFile), false, "stale file should have been swept");
+		assert.deepStrictEqual(calls, [1], "onGc should fire exactly once with the deleted count");
+	});
+
+	it("onGc callback is never called when the GC sweep deletes nothing", () => {
+		const dir = makeTmpDir();
+		const calls = [];
+		ensureOutputStyle("no stale files present", dir, (deleted) => calls.push(deleted));
+		assert.deepStrictEqual(calls, []);
+	});
+
+	it("onGc is optional — omitting it behaves exactly as before", () => {
+		const dir = makeTmpDir();
+		assert.doesNotThrow(() => ensureOutputStyle("no callback provided", dir));
+	});
+
 	it("concurrency smoke: interleaved ensure calls for identical content leave exactly one valid file, no .tmp residue", () => {
 		const dir = makeTmpDir();
 		const body = "concurrent body content";

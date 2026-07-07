@@ -893,7 +893,9 @@ function runIsolatedSideQuery(
 	const appendParts = [agentsAppend, skillsAppend].filter((p): p is string => Boolean(p));
 	const systemPromptContent = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 	const outputStyleName = systemPromptMode === "output-style"
-		? ensureOutputStyle(context.systemPrompt)
+		? ensureOutputStyle(context.systemPrompt, undefined, (deleted) => {
+			debug(`sidequery: output-style GC deleted ${deleted} stale file(s)`);
+		})
 		: undefined;
 	const baseSettingSources = systemPromptMode === "replace"
 		? []
@@ -1222,7 +1224,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// NEW (R11): output style file lives at user level; union "user" into
 	// settingSources when a style is active (R3, §6.4).
 	const outputStyleName = systemPromptMode === "output-style"
-		? ensureOutputStyle(context.systemPrompt)
+		? ensureOutputStyle(context.systemPrompt, undefined, (deleted) => {
+			debug(`provider: output-style GC deleted ${deleted} stale file(s)`);
+		})
 		: undefined;
 
 	debug(`systemPrompt debug: mode=${systemPromptMode} agentsAppend.length=${agentsAppend?.length ?? 0} skillsAppend.length=${skillsAppend?.length ?? 0} content.length=${systemPromptContent?.length ?? 0} processCwd=${process.cwd()} providerCwd=${cwd} outputStyle=${outputStyleName ?? "none"}`);
