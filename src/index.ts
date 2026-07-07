@@ -17,6 +17,7 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { QueryContext, ctx, stackDepth, pushContext, popContext, isStaleForeignPromptShape } from "./query-state.js";
 import { loadConfig, resolveSystemPromptMode } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
+import { ensureOutputStyle, buildSystemPromptOptions } from "./output-style.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
@@ -891,9 +892,15 @@ function runIsolatedSideQuery(
 	const skillsAppend = extractSkillsBlock(context.systemPrompt);
 	const appendParts = [agentsAppend, skillsAppend].filter((p): p is string => Boolean(p));
 	const systemPromptContent = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
-	const effectiveSettingSources = systemPromptMode === "replace"
+	const outputStyleName = systemPromptMode === "output-style"
+		? ensureOutputStyle(context.systemPrompt)
+		: undefined;
+	const baseSettingSources = systemPromptMode === "replace"
 		? []
 		: (providerSettings.settingSources ?? ["user", "project"]);
+	const effectiveSettingSources = outputStyleName && !baseSettingSources.includes("user")
+		? [...baseSettingSources, "user" as SettingSource]
+		: baseSettingSources;
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 	const effort = options?.reasoning
@@ -910,7 +917,13 @@ function runIsolatedSideQuery(
 		? wrapPromptStream(promptBlocks)
 		: promptText;
 
-	debug(`sidequery: model=${model.id} mode=${systemPromptMode} effort=${effort ?? "default"} promptLen=${promptText.length}${promptBlocks ? " [+images]" : ""}`);
+	debug(`sidequery: model=${model.id} mode=${systemPromptMode} effort=${effort ?? "default"} promptLen=${promptText.length}${promptBlocks ? " [+images]" : ""} outputStyle=${outputStyleName ?? "none"}`);
+
+	const { systemPrompt: sdkSystemPrompt, settings } = buildSystemPromptOptions(
+		systemPromptMode,
+		systemPromptContent,
+		outputStyleName,
+	);
 
 	const sdkQuery = query({
 		prompt,
@@ -921,12 +934,11 @@ function runIsolatedSideQuery(
 			permissionMode: "bypassPermissions",
 			includePartialMessages: true,
 			persistSession: false,
-			systemPrompt: systemPromptMode === "append"
-				? { type: "preset", preset: "claude_code", append: systemPromptContent }
-				: systemPromptContent ?? "",
+			systemPrompt: sdkSystemPrompt,
 			extraArgs,
 			...buildThinkingOptions(options?.reasoning, effort),
 			...(effectiveSettingSources ? { settingSources: effectiveSettingSources as SettingSource[] } : {}),
+			...(settings ? { settings } : {}),
 			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 			...makeCliDebugOptions("sidequery"),
 		},
@@ -1206,7 +1218,13 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
 	const systemPromptContent = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 
-	debug(`systemPrompt debug: mode=${systemPromptMode} agentsAppend.length=${agentsAppend?.length ?? 0} skillsAppend.length=${skillsAppend?.length ?? 0} content.length=${systemPromptContent?.length ?? 0} processCwd=${process.cwd()} providerCwd=${cwd}`);
+	// NEW (R11): output style file lives at user level; union "user" into
+	// settingSources when a style is active (R3, §6.4).
+	const outputStyleName = systemPromptMode === "output-style"
+		? ensureOutputStyle(context.systemPrompt)
+		: undefined;
+
+	debug(`systemPrompt debug: mode=${systemPromptMode} agentsAppend.length=${agentsAppend?.length ?? 0} skillsAppend.length=${skillsAppend?.length ?? 0} content.length=${systemPromptContent?.length ?? 0} processCwd=${process.cwd()} providerCwd=${cwd} outputStyle=${outputStyleName ?? "none"}`);
 
 	// MCP auto-loading suppression: CC reads MCP servers from ~/.claude.json (top-level
 	// + per-project) and .mcp.json. Since pi executes tools (not CC), those are pure
@@ -1216,9 +1234,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// When systemPromptMode is "replace", we don't want CC to load its default
 	// prompt OR any CLAUDE.md from settings. Setting settingSources to []
 	// tells the CLI to not load any settings-based system prompts.
-	const effectiveSettingSources = systemPromptMode === "replace"
+	const baseSettingSources = systemPromptMode === "replace"
 		? []
 		: (providerSettings.settingSources ?? ["user", "project"]);
+	const effectiveSettingSources = outputStyleName && !baseSettingSources.includes("user")
+		? [...baseSettingSources, "user" as SettingSource]
+		: baseSettingSources;
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1246,25 +1267,29 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// threshold with CC's, including CC's anti-thrashing guard (issue #8).
 	// Manual /compact in CC still works (we never invoke it).
 	const childEnv = { ...process.env, ENABLE_CLAUDEAI_MCP_SERVERS: "0", DISABLE_AUTO_COMPACT: "1" };
+	const { systemPrompt: sdkSystemPrompt, settings } = buildSystemPromptOptions(
+		systemPromptMode,
+		systemPromptContent,
+		outputStyleName,
+	);
 	const queryOptions: NonNullable<Parameters<typeof query>[0]["options"]> = {
 		cwd,
 		env: childEnv,
 		tools: [],
 		permissionMode: "bypassPermissions",
 		includePartialMessages: true,
-		systemPrompt: systemPromptMode === "append"
-			? { type: "preset", preset: "claude_code", append: systemPromptContent }
-			: systemPromptContent ?? "",
+		systemPrompt: sdkSystemPrompt,
 		extraArgs,
 		...buildThinkingOptions(options?.reasoning, effort),
 		...(effectiveSettingSources ? { settingSources: effectiveSettingSources } : {}),
+		...(settings ? { settings } : {}),
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
 		...makeCliDebugOptions("provider"),
 	};
 
-	debug(`queryOptions.systemPrompt: ${typeof systemPromptContent === "string" ? `string(${systemPromptContent.length}chars)` : JSON.stringify(systemPromptContent)} mode=${systemPromptMode}`);
+	debug(`queryOptions.systemPrompt: ${typeof systemPromptContent === "string" ? `string(${systemPromptContent.length}chars)` : JSON.stringify(systemPromptContent)} mode=${systemPromptMode} outputStyle=${outputStyleName ?? "none"}`);
 
 	debug("provider: fresh query",
 		`model=${model.id} msgs=${context.messages.length} tools=${mcpTools.length}`,
@@ -1499,7 +1524,9 @@ async function promptAndWait(
 			permissionMode: "bypassPermissions",
 			...(disallowedTools.length ? { disallowedTools } : {}),
 			...buildThinkingOptions(options?.thinking, effort),
-			systemPrompt: systemPromptMode === "append"
+			// R13: "output-style" behaves exactly like "append" here — AskClaude never
+			// writes or selects an output-style file; CC's own persona is the product.
+			systemPrompt: (systemPromptMode === "append" || systemPromptMode === "output-style")
 				? { type: "preset", preset: "claude_code", append: skillsBlock }
 				: skillsBlock,
 			settingSources: ["user", "project"] as SettingSource[],
