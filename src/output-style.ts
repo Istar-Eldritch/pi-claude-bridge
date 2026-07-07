@@ -94,7 +94,16 @@ export function ensureOutputStyle(
 		}
 		ensuredNames.add(cacheKey);
 		const deleted = gcStaleStyles(dir); // best-effort, inside the try
-		if (deleted > 0) onGc?.(deleted);
+		if (deleted > 0) {
+			// Own try/catch: onGc is caller-supplied observability, not part of this
+			// function's own contract — a throwing callback must not make an
+			// otherwise-successful write/rename spuriously degrade to undefined.
+			try {
+				onGc?.(deleted);
+			} catch {
+				/* caller's observability hook, not our failure */
+			}
+		}
 		return name;
 	} catch {
 		return undefined;

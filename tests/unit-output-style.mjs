@@ -176,6 +176,25 @@ describe("ensureOutputStyle", () => {
 		assert.doesNotThrow(() => ensureOutputStyle("no callback provided", dir));
 	});
 
+	it("a throwing onGc does not make an otherwise-successful write degrade to undefined", () => {
+		const dir = makeTmpDir();
+
+		const staleFile = join(dir, "pi-bridge-dddddddddddddddd.md");
+		writeFileSync(staleFile, "stale");
+		const staleTime = new Date(Date.now() - 1000 * 60 * 60 * 24 * 40);
+		utimesSync(staleFile, staleTime, staleTime);
+
+		const body = "fresh body, gc will fire, callback throws";
+		let name;
+		assert.doesNotThrow(() => {
+			name = ensureOutputStyle(body, dir, () => {
+				throw new Error("boom — caller's logger blew up");
+			});
+		});
+		assert.strictEqual(name, outputStyleName(body), "write should still succeed and be reported");
+		assert.ok(existsSync(join(dir, `${name}.md`)), "style file should still exist on disk");
+	});
+
 	it("concurrency smoke: interleaved ensure calls for identical content leave exactly one valid file, no .tmp residue", () => {
 		const dir = makeTmpDir();
 		const body = "concurrent body content";
