@@ -77,7 +77,12 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or `.pi/claude-bridge.json` (p
 
 `provider` (low-level SDK plumbing, most users can ignore):
 
-- `appendSystemPrompt` — append pi's AGENTS.md and skills (default `true`)
+- `systemPromptMode` — controls how pi's system prompt reaches Claude Code:
+  - `"append"` (default) — CC preset + AGENTS.md/skills appended
+  - `"output-style"` — same as `"append"`, plus pi's full system prompt (including anything from `pi --append-system-prompt`) is delivered as a content-addressed Claude Code output style at `~/.claude/output-styles/pi-bridge-<hash>.md` (write-once per content hash, touched on reuse, garbage-collected after 30 days idle). Use this to keep pi's real behavioral instructions governing Claude while staying on the included Claude Pro/Max subscription lane for tool-bearing requests — `"replace"` below does not reliably stay on that lane once real MCP tools are present.
+  - `"replace"` — only pi's AGENTS.md/skills; CC's own preset is not loaded. If you chose this to dodge append-mode "out of extra usage" overage errors, try `"output-style"` instead — it keeps the CC preset (subscription-lane admission) while still carrying pi's full prompt.
+  - `false` — no system prompt at all
+- `appendSystemPrompt` (deprecated) — boolean alias for `systemPromptMode`: `true` → `"append"`, `false` → `false`. Prefer `systemPromptMode`.
 - `settingSources` — CC filesystem settings to load; only applied when `appendSystemPrompt: false`
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Required on **NixOS** (and other non-FHS systems) where the SDK's bundled musl/glibc binaries can't run. Set to your Nix-installed binary, e.g. `"/home/you/.nix-profile/bin/claude"`.
