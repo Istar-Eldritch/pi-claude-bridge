@@ -19,6 +19,7 @@ import {
 } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { SystemPromptMode } from "./config.js";
 
 export const OUTPUT_STYLE_PREFIX = "pi-bridge-";
@@ -91,28 +92,59 @@ export function ensureOutputStyle(
 	}
 }
 
-/** Delete pi-bridge-*.md files idle for > 30 days. Best-effort; never throws. */
+/**
+ * Delete pi-bridge-*.md files idle for > 30 days, plus any orphaned
+ * .pi-bridge-*.tmp write-in-progress files (left behind if the process died
+ * between writeFileSync and renameSync in ensureOutputStyle — rare, but
+ * without this they'd accumulate forever since the .md sweep above never
+ * matches a dotfile). Best-effort; never throws. Returns the number of files
+ * deleted (0 on any error) — not logged from here since this module
+ * intentionally has no logger dependency (kept importable by tests without
+ * activating the extension); callers with a logger may log the count.
+ */
 export function gcStaleStyles(
 	dir = defaultOutputStylesDir(),
 	maxAgeMs = GC_MAX_AGE_MS,
 	now = Date.now(),
-): void {
+): number {
 	let entries: string[];
 	try {
 		entries = readdirSync(dir);
 	} catch {
-		return;
+		return 0;
 	}
+	let deleted = 0;
 	for (const entry of entries) {
-		if (!entry.startsWith(OUTPUT_STYLE_PREFIX) || !entry.endsWith(".md"))
-			continue;
+		const isStyle = entry.startsWith(OUTPUT_STYLE_PREFIX) && entry.endsWith(".md");
+		const isOrphanTmp = entry.startsWith(`.${OUTPUT_STYLE_PREFIX}`) && entry.endsWith(".tmp");
+		if (!isStyle && !isOrphanTmp) continue;
 		try {
 			const full = join(dir, entry);
-			if (now - statSync(full).mtimeMs > maxAgeMs) unlinkSync(full);
+			if (now - statSync(full).mtimeMs > maxAgeMs) {
+				unlinkSync(full);
+				deleted++;
+			}
 		} catch {
 			/* concurrent delete / perms — ignore */
 		}
 	}
+	return deleted;
+}
+
+/**
+ * Union "user" into settingSources when an output style is active (R11) —
+ * the style file is resolved from the user-level output-styles directory, so
+ * CC needs "user" present in settingSources to find it (§6.3). No-op (same
+ * array reference) when no style is active or "user" is already present, so
+ * callers can cheaply detect — and debug()-log — whether the union actually
+ * changed anything. Pure; shared by every call site to prevent drift.
+ */
+export function unionUserSource(
+	sources: SettingSource[],
+	outputStyleActive: boolean,
+): SettingSource[] {
+	if (!outputStyleActive || sources.includes("user")) return sources;
+	return [...sources, "user"];
 }
 
 // Test-only: reset the process-level ensured cache.

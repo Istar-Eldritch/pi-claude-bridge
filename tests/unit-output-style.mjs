@@ -17,6 +17,7 @@ import {
 	gcStaleStyles,
 	resetEnsuredCache,
 	buildSystemPromptOptions,
+	unionUserSource,
 	OUTPUT_STYLE_PREFIX,
 } from "../src/output-style.js";
 import { resolveSystemPromptMode } from "../src/config.js";
@@ -168,7 +169,7 @@ describe("ensureOutputStyle", () => {
 });
 
 describe("gcStaleStyles", () => {
-	it("deletes only pi-bridge-*.md files older than the TTL, leaving fresh and non-matching files alone", () => {
+	it("deletes only pi-bridge-*.md files older than the TTL, leaving fresh and non-matching files alone, and returns the count deleted", () => {
 		const dir = makeTmpDir();
 		const now = Date.now();
 		const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
@@ -186,16 +187,80 @@ describe("gcStaleStyles", () => {
 		const staleTime = new Date(now - maxAgeMs - 1000 * 60);
 		utimesSync(staleBridge, staleTime, staleTime);
 
-		gcStaleStyles(dir, maxAgeMs, now);
+		const deleted = gcStaleStyles(dir, maxAgeMs, now);
 
+		assert.strictEqual(deleted, 1, "should report exactly one deletion");
 		assert.strictEqual(existsSync(staleBridge), false, "stale pi-bridge- .md should be deleted");
 		assert.strictEqual(existsSync(freshBridge), true, "fresh pi-bridge- .md should survive");
 		assert.strictEqual(existsSync(customStyle), true, "non pi-bridge- file should never be touched");
 		assert.strictEqual(existsSync(nonMdBridge), true, "non-.md file should never be touched even with prefix");
 	});
 
-	it("is best-effort and never throws when the dir does not exist", () => {
-		assert.doesNotThrow(() => gcStaleStyles(join(tmpdir(), "pi-bridge-test-does-not-exist-xyz")));
+	it("also sweeps orphaned .pi-bridge-*.tmp write-in-progress files past the TTL, leaving fresh ones alone", () => {
+		const dir = makeTmpDir();
+		const now = Date.now();
+		const maxAgeMs = 30 * 24 * 60 * 60 * 1000;
+
+		// Mirrors the temp filename shape ensureOutputStyle uses before renameSync:
+		// `.${name}.${pid}.${rand}.tmp` where name already carries the prefix.
+		const staleTmp = join(dir, ".pi-bridge-aaaaaaaaaaaaaaaa.12345.deadbeef.tmp");
+		const freshTmp = join(dir, ".pi-bridge-bbbbbbbbbbbbbbbb.12345.deadbeef.tmp");
+		const otherDotfile = join(dir, ".unrelated-dotfile.tmp");
+
+		writeFileSync(staleTmp, "partial write");
+		writeFileSync(freshTmp, "partial write");
+		writeFileSync(otherDotfile, "not ours");
+
+		const staleTime = new Date(now - maxAgeMs - 1000 * 60);
+		utimesSync(staleTmp, staleTime, staleTime);
+
+		const deleted = gcStaleStyles(dir, maxAgeMs, now);
+
+		assert.strictEqual(deleted, 1);
+		assert.strictEqual(existsSync(staleTmp), false, "stale orphan .tmp should be swept");
+		assert.strictEqual(existsSync(freshTmp), true, "fresh .tmp (write still in flight) should survive");
+		assert.strictEqual(existsSync(otherDotfile), true, "unrelated dotfile should never be touched");
+	});
+
+	it("is best-effort, never throws, and returns 0 when the dir does not exist", () => {
+		let result;
+		assert.doesNotThrow(() => {
+			result = gcStaleStyles(join(tmpdir(), "pi-bridge-test-does-not-exist-xyz"));
+		});
+		assert.strictEqual(result, 0);
+	});
+});
+
+describe("unionUserSource (R11)", () => {
+	it("no-op (same reference) when no output style is active", () => {
+		const sources = ["project"];
+		const result = unionUserSource(sources, false);
+		assert.strictEqual(result, sources, "should return the identical array reference, not a copy");
+	});
+
+	it("no-op (same reference) when \"user\" is already present and a style is active", () => {
+		const sources = ["user", "project"];
+		const result = unionUserSource(sources, true);
+		assert.strictEqual(result, sources);
+	});
+
+	it("unions \"user\" in when a style is active and it's missing", () => {
+		const sources = ["project"];
+		const result = unionUserSource(sources, true);
+		assert.deepStrictEqual(result, ["project", "user"]);
+		assert.notStrictEqual(result, sources, "should return a new array, not mutate the input");
+		assert.deepStrictEqual(sources, ["project"], "input array must be unmutated");
+	});
+
+	it("unions into an empty settingSources array (replace-mode shape) when active", () => {
+		const result = unionUserSource([], true);
+		assert.deepStrictEqual(result, ["user"]);
+	});
+
+	it("leaves an empty settingSources array alone when inactive", () => {
+		const sources = [];
+		const result = unionUserSource(sources, false);
+		assert.strictEqual(result, sources);
 	});
 });
 

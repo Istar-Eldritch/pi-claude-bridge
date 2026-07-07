@@ -76,11 +76,15 @@ run "tool: AskClaude responds" \
 STYLES_DIR="$HOME/.claude/output-styles"
 CONFIG_FILE="$DIR/.pi/claude-bridge.json"
 CONFIG_BACKUP=""
+# Initialized empty (not yet created) so the cleanup trap below is safe to
+# reference them under `set -u` even if it fires before either mktemp runs.
+STYLE_SNAPSHOT=""
+STYLE_CHECK_SCRIPT=""
 if [ -f "$CONFIG_FILE" ]; then
   CONFIG_BACKUP=$(mktemp)
   cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 fi
-restore_output_style_config() {
+cleanup_output_style_case() {
   if [ -n "$CONFIG_BACKUP" ]; then
     cp "$CONFIG_BACKUP" "$CONFIG_FILE"
     rm -f "$CONFIG_BACKUP"
@@ -88,8 +92,12 @@ restore_output_style_config() {
   else
     rm -f "$CONFIG_FILE"
   fi
+  # Also run on early exit (set -e abort mid-case), not just the happy path,
+  # so a failed assertion below can't leak temp files.
+  [ -n "$STYLE_SNAPSHOT" ] && rm -f "$STYLE_SNAPSHOT"
+  [ -n "$STYLE_CHECK_SCRIPT" ] && rm -f "$STYLE_CHECK_SCRIPT"
 }
-trap 'restore_output_style_config; kill_descendants' EXIT
+trap 'cleanup_output_style_case; kill_descendants' EXIT
 
 mkdir -p "$DIR/.pi"
 cat > "$CONFIG_FILE" <<'EOF'
@@ -104,6 +112,11 @@ if [ -d "$STYLES_DIR" ]; then
   done
 fi
 
+# NOTE: like "provider: print mode responds" above, this necessarily uses the
+# real premium claude-bridge model (output-style only applies to the bridge
+# provider; $ALT_MODEL can't exercise it) and so costs real Claude Code
+# subscription usage — it is not free/mocked despite §9.2's "no premium usage"
+# framing for this test *file* overall.
 run "provider: output-style mode responds" \
   pi --no-session -ne -e "$DIR" \
   --model "claude-bridge/claude-sonnet-4-6" \
@@ -132,8 +145,7 @@ chmod +x "$STYLE_CHECK_SCRIPT"
 
 run "provider: output-style file written/touched" bash "$STYLE_CHECK_SCRIPT"
 
-restore_output_style_config
-rm -f "$STYLE_SNAPSHOT" "$STYLE_CHECK_SCRIPT"
+cleanup_output_style_case
 trap kill_descendants EXIT
 
 # --- Summary ---

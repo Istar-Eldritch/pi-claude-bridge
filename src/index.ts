@@ -17,7 +17,7 @@ import { extractAllToolResults as _extractAllToolResults, type McpResult } from 
 import { QueryContext, ctx, stackDepth, pushContext, popContext, isStaleForeignPromptShape } from "./query-state.js";
 import { loadConfig, resolveSystemPromptMode } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
-import { ensureOutputStyle, buildSystemPromptOptions } from "./output-style.js";
+import { ensureOutputStyle, buildSystemPromptOptions, unionUserSource } from "./output-style.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
@@ -898,9 +898,10 @@ function runIsolatedSideQuery(
 	const baseSettingSources = systemPromptMode === "replace"
 		? []
 		: (providerSettings.settingSources ?? ["user", "project"]);
-	const effectiveSettingSources = outputStyleName && !baseSettingSources.includes("user")
-		? [...baseSettingSources, "user" as SettingSource]
-		: baseSettingSources;
+	const effectiveSettingSources = unionUserSource(baseSettingSources, Boolean(outputStyleName));
+	if (effectiveSettingSources !== baseSettingSources) {
+		debug(`sidequery: unioned "user" into settingSources for output-style resolution (R11)`);
+	}
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 	const effort = options?.reasoning
@@ -1237,9 +1238,10 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const baseSettingSources = systemPromptMode === "replace"
 		? []
 		: (providerSettings.settingSources ?? ["user", "project"]);
-	const effectiveSettingSources = outputStyleName && !baseSettingSources.includes("user")
-		? [...baseSettingSources, "user" as SettingSource]
-		: baseSettingSources;
+	const effectiveSettingSources = unionUserSource(baseSettingSources, Boolean(outputStyleName));
+	if (effectiveSettingSources !== baseSettingSources) {
+		debug(`provider: unioned "user" into settingSources for output-style resolution (R11)`);
+	}
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
 	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
 
@@ -1526,6 +1528,11 @@ async function promptAndWait(
 			...buildThinkingOptions(options?.thinking, effort),
 			// R13: "output-style" behaves exactly like "append" here — AskClaude never
 			// writes or selects an output-style file; CC's own persona is the product.
+			// Deliberately inlined instead of buildSystemPromptOptions(): that helper's
+			// replace/false branch returns `appendContent ?? ""`, but this call site's
+			// pre-existing behavior passes `skillsBlock` through as-is (including
+			// `undefined`). If buildSystemPromptOptions ever gains a wiring change,
+			// re-check this site isn't silently expected to follow it.
 			systemPrompt: (systemPromptMode === "append" || systemPromptMode === "output-style")
 				? { type: "preset", preset: "claude_code", append: skillsBlock }
 				: skillsBlock,
