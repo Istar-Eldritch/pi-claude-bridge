@@ -23,8 +23,14 @@ export interface Config {
 	provider?: {
 		/** @deprecated Use systemPromptMode instead. true=append, false=disabled. */
 		appendSystemPrompt?: boolean;
-		/** Controls how pi's system prompt (AGENTS.md + skills) is fed to Claude Code. */
-		systemPromptMode?: "append" | "replace" | false;
+		/** Controls how pi's system prompt is fed to Claude Code.
+		 *  - "append": CC preset + AGENTS.md/skills appended (default)
+		 *  - "output-style": CC preset + AGENTS.md/skills appended, AND pi's full
+		 *    system prompt delivered as a content-addressed output style (keeps
+		 *    subscription-lane admission while carrying pi's real prompt)
+		 *  - "replace": only pi's AGENTS.md/skills, CC preset not loaded
+		 *  - false: no system prompt at all */
+		systemPromptMode?: "append" | "replace" | "output-style" | false;
 		settingSources?: SettingSource[];
 		strictMcpConfig?: boolean;
 		pathToClaudeCodeExecutable?: string;
@@ -56,10 +62,12 @@ export function loadConfig(cwd: string): Config {
  * Resolves the effective systemPromptMode, handling the deprecated appendSystemPrompt
  * boolean alias for backward compatibility.
  * - "append": CC default + pi's AGENTS.md/skills appended (original behavior)
+ * - "output-style": CC preset + AGENTS.md/skills appended, plus pi's full system
+ *   prompt delivered as an output style (see src/output-style.ts)
  * - "replace": only pi's AGENTS.md/skills, CC default is not loaded
  * - false: no system prompt at all
  */
-export type SystemPromptMode = "append" | "replace" | false;
+export type SystemPromptMode = "append" | "replace" | "output-style" | false;
 
 export function resolveSystemPromptMode(
 	provider: Config["provider"],
