@@ -31,7 +31,7 @@ const mockPiAiModel = (id) => ({
 // pi-ai only ever ships base (non-[1m]) model ids; the bridge synthesises the
 // [1m] variants. It also synthesises base models not yet shipped upstream (e.g.
 // claude-sonnet-5), so exclude those here to mirror what pi-ai actually returns.
-const SYNTHETIC_BASE_IDS = new Set(["claude-sonnet-5"]);
+const SYNTHETIC_BASE_IDS = new Set(["claude-opus-5"]);
 const PI_AI_MODEL_IDS = [
 	...new Set(MODEL_IDS_IN_ORDER.map((id) => id.replace(/\[1m\]$/, ""))),
 ].filter((id) => !SYNTHETIC_BASE_IDS.has(id));
@@ -76,21 +76,21 @@ describe("MODELS projection", () => {
 		assert.equal(m1m.name, "Claude Opus 4.8 (1M)");
 	});
 
-	it("synthesises claude-sonnet-5 (+[1m]) from the sonnet-4-6 donor when pi-ai lacks it", () => {
-		// pi-ai doesn't ship claude-sonnet-5 yet; SYNTHETIC_BASE_MODELS clones the
-		// sonnet-4-6 donor so the model (and its 1M variant) is available early.
-		const donor = mockPiAiModel("claude-sonnet-4-6");
+	it("synthesises claude-opus-5 (+[1m]) from the opus-4-8 donor when pi-ai lacks it", () => {
+		// pi-ai doesn't ship claude-opus-5 yet; SYNTHETIC_BASE_MODELS clones the
+		// opus-4-8 donor so the model (and its 1M variant) is available early.
+		const donor = mockPiAiModel("claude-opus-4-8");
 		donor.contextWindow = 1_000_000;
 		const models = buildModels([donor]);
 		const ids = models.map((m) => m.id);
-		assert.ok(ids.includes("claude-sonnet-5"), "synthetic base present");
-		assert.ok(ids.includes("claude-sonnet-5[1m]"), "[1m] variant present");
-		const base = models.find((m) => m.id === "claude-sonnet-5");
-		assert.equal(base.name, "Claude Sonnet 5");
+		assert.ok(ids.includes("claude-opus-5"), "synthetic base present");
+		assert.ok(ids.includes("claude-opus-5[1m]"), "[1m] variant present");
+		const base = models.find((m) => m.id === "claude-opus-5");
+		assert.equal(base.name, "Claude Opus 5");
 		assert.equal(base.contextWindow, 200_000); // MODEL_OVERRIDES cap
-		const m1m = models.find((m) => m.id === "claude-sonnet-5[1m]");
+		const m1m = models.find((m) => m.id === "claude-opus-5[1m]");
 		assert.equal(m1m.contextWindow, 1_000_000);
-		assert.equal(m1m.name, "Claude Sonnet 5 (1M)");
+		assert.equal(m1m.name, "Claude Opus 5 (1M)");
 	});
 
 	it("synthesises claude-fable-5[1m] from the native pi-ai fable-5 base", () => {
@@ -158,8 +158,8 @@ describe("MODELS projection", () => {
 describe("resolveModelId", () => {
 	const models = buildModels(PI_AI_MODEL_IDS.map(mockPiAiModel));
 
-	it("opus shortcut resolves to claude-opus-4-8 (first opus in order)", () => {
-		assert.equal(resolveModelId(models, "opus"), "claude-opus-4-8");
+	it("opus shortcut resolves to claude-opus-5 (newest opus, listed first)", () => {
+		assert.equal(resolveModelId(models, "opus"), "claude-opus-5");
 	});
 
 	it("sonnet shortcut resolves to claude-sonnet-5 (newest sonnet, listed first)", () => {

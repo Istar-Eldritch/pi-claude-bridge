@@ -4,6 +4,8 @@
 
 export const MODEL_IDS_IN_ORDER = [
 	"claude-fable-5[1m]",
+	"claude-opus-5",
+	"claude-opus-5[1m]",
 	"claude-opus-4-8",
 	"claude-opus-4-8[1m]",
 	"claude-opus-4-7",
@@ -37,6 +39,7 @@ const MODEL_OVERRIDES: Record<string, Record<string, any>> = {
 	// WD6, because it matches neither q4A nor Pq8() and O$H returns true for
 	// opus-4-7 on firstParty — but on API key it would also fall to WD6. TODO:
 	// verify opus-4-7 actual limit and add override + [1m] variant if needed.)
+	"claude-opus-5": { contextWindow: 200_000 },
 	"claude-opus-4-8": { contextWindow: 200_000 },
 	"claude-sonnet-5": { contextWindow: 200_000 },
 	"claude-sonnet-4-6": { contextWindow: 200_000 },
@@ -50,6 +53,11 @@ const MODEL_1M_ENTRIES: Record<
 	string,
 	{ id: string; name: string; contextWindow: number }
 > = {
+	"claude-opus-5[1m]": {
+		id: "claude-opus-5[1m]",
+		name: "Claude Opus 5 (1M)",
+		contextWindow: 1_000_000,
+	},
 	"claude-opus-4-8[1m]": {
 		id: "claude-opus-4-8[1m]",
 		name: "Claude Opus 4.8 (1M)",
@@ -82,7 +90,7 @@ const MODEL_1M_ENTRIES: Record<
 // patched with id/name; contextWindow is corrected by MODEL_OVERRIDES if needed).
 // Remove an entry once pi-ai ships the model natively (see git history for fable-5).
 const SYNTHETIC_BASE_MODELS: Record<string, { donor: string; name: string }> = {
-	"claude-sonnet-5": { donor: "claude-sonnet-4-6", name: "Claude Sonnet 5" },
+	"claude-opus-5": { donor: "claude-opus-4-8", name: "Claude Opus 5" },
 };
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
