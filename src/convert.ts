@@ -57,6 +57,18 @@ export function messageContentToText(
 	return hasText ? parts.join("\n") : "";
 }
 
+/**
+ * Roles convertPiMessages() actually converts into imported session records.
+ * Everything else — notably the synthetic leading `role: "system"` message
+ * pi prepends to every provider transcript (pi-ai normalizeContext) — is
+ * silently dropped. syncSharedSession relies on this to avoid rebuilding a
+ * session that would import zero records (save() would no-op and CC's resume
+ * would find no file).
+ */
+export function isImportablePiRole(role: string): boolean {
+	return role === "user" || role === "assistant" || role === "toolResult";
+}
+
 /** Convert pi message array to Anthropic API format. */
 export function convertPiMessages(
 	messages: PiMessage[],

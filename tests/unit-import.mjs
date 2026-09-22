@@ -3,7 +3,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeToolId, convertPiMessages } from "../src/convert.js";
+import { sanitizeToolId, convertPiMessages, isImportablePiRole } from "../src/convert.js";
 
 /** Shorthand: convert pi messages and return just the anthropic messages. */
 function convert(messages, customToolNameToSdk) {
@@ -267,5 +267,45 @@ describe("message structure", () => {
 			]},
 		];
 		assert.equal(convert(msgs)[0].content[0].content, "line 1\nline 2");
+	});
+});
+
+describe("system message handling (session rebuild guard)", () => {
+	// pi prepends a synthetic role:"system" message to every provider transcript
+	// (pi-ai normalizeContext) and persists it as a session entry. convertPiMessages
+	// drops it — which is correct for import — but syncSharedSession must treat a
+	// system-only prior history as a clean start, otherwise save() no-ops, the
+	// session file is never written, and CC's --resume fails with
+	// "No conversation found" (observed 2026-09-22, see session-verify ENOENT warnings).
+
+	it("convertPiMessages drops system-role messages", () => {
+		assert.equal(convert([{ role: "system", content: "", toolsAdded: [] }]).length, 0);
+		assert.equal(
+			convert([
+				{ role: "system", content: "", toolsAdded: [] },
+				{ role: "user", content: "hi" },
+			]).length,
+			1,
+		);
+	});
+
+	it("isImportablePiRole matches exactly the roles convertPiMessages imports", () => {
+		for (const role of ["user", "assistant", "toolResult"]) {
+			assert.equal(isImportablePiRole(role), true, role);
+		}
+		for (const role of ["system", "", "custom", "toolCall"]) {
+			assert.equal(isImportablePiRole(role), false, role);
+		}
+		// Invariant syncSharedSession relies on: importable count 0 ⟺ converted count 0.
+		const shapes = [
+			[],
+			[{ role: "system", content: "" }],
+			[{ role: "system", content: "" }, { role: "system", content: "" }],
+			[{ role: "system", content: "" }, { role: "user", content: "hi" }],
+		];
+		for (const msgs of shapes) {
+			const importable = msgs.filter((m) => isImportablePiRole(m.role)).length;
+			assert.equal(importable === 0, convert(msgs).length === 0, JSON.stringify(msgs));
+		}
 	});
 });

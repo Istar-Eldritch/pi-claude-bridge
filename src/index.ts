@@ -10,7 +10,7 @@ import { createSession, deleteSession, repairToolPairing } from "cc-session-io";
 import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
+import { PROVIDER_ID, messageContentToText, convertPiMessages, isImportablePiRole } from "./convert.js";
 import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
@@ -386,9 +386,18 @@ function syncSharedSession(
 		}
 	}
 
-	// REBUILD path
-	if (priorMessages.length === 0) {
-		debug(`Case 1: clean start, ${messages.length} total messages`);
+	// REBUILD path. pi prepends a synthetic role:"system" message to every
+	// provider transcript (pi-ai normalizeContext) and also persists it as a
+	// session entry, but convertPiMessages drops system-role messages. A history
+	// that is nothing but system messages would import zero records: save()
+	// no-ops (cc-session-io returns early when nothing is pending), the session
+	// file is never created, verifyWrittenSession warns ENOENT, and the returned
+	// sessionId makes CC's --resume fail with "No conversation found". Treat an
+	// all-unimportable history as a clean start instead — there is no prior
+	// conversation to seed, which is exactly what a first prompt is.
+	const importablePriorCount = priorMessages.filter((m) => isImportablePiRole((m as { role: string }).role)).length;
+	if (importablePriorCount === 0) {
+		debug(`Case 1: clean start, ${messages.length} total messages (${priorMessages.length} prior, 0 importable)`);
 		debug(`syncResult: path=clean-start`);
 		return { sessionId: null };
 	}
@@ -1663,6 +1672,15 @@ export default function (pi: ExtensionAPI) {
 		if (event.reason === "new" || event.reason === "resume" || event.reason === "fork") {
 			clearSession(`session_start:${event.reason}`);
 		}
+		// After /reload the fresh module generation takes ownership back, so
+		// wrappers registered by older generations route to the live
+		// implementation again. Only on "reload" — subagent spawns use "new",
+		// and claiming there would steal ownership from the parent mid-flight.
+		if (event.reason === "reload") {
+			const g = globalThis as Record<symbol, any>;
+			g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
+			debug(`session_start:reload — this generation owns streamSimple (module=${moduleInstanceId})`);
+		}
 	});
 	pi.on("session_shutdown", () => clearSession("session_shutdown"));
 
@@ -1722,25 +1740,39 @@ export default function (pi: ExtensionAPI) {
 	// See ACTIVE_STREAM_SIMPLE_KEY for the full mechanism.
 
 	const g = globalThis as Record<symbol, any>;
-	if (!g[ACTIVE_STREAM_SIMPLE_KEY]) {
-		// First instance: store our streamSimple and register.
+	// First instance in the process owns the implementation; EVERY instance
+	// registers. Why not skip later registrations entirely (the old behavior):
+	// pi-web-ui creates one ModelRuntime per client runtime — only the first
+	// conversation's runtime seeds the shared one (agent-service.js) — so a
+	// skipped registration left those registries with AskClaude but NO
+	// claude-bridge provider at all: the model picker showed no Claude models
+	// and set_model failed with 模型不存在 (observed 2026-09-22).
+	//
+	// Why a delegating wrapper preserves the original TUI guarantee: a late
+	// instance's registration overwrites the registry entry, but calls route
+	// at call time to g[ACTIVE_STREAM_SIMPLE_KEY] — the owning generation's
+	// streamSimple with its full module state — so a fresh, empty module state
+	// is never used for streaming, exactly like the old skip. Own-implementation
+	// fallback covers the window where the owner was cleared (identity-check in
+	// clearSession) but no new owner exists yet.
+	const owningInstance = !g[ACTIVE_STREAM_SIMPLE_KEY];
+	if (owningInstance) {
 		g[ACTIVE_STREAM_SIMPLE_KEY] = streamClaudeAgentSdk;
-		pi.registerProvider(PROVIDER_ID, {
-			baseUrl: "claude-bridge",
-			apiKey: "not-used",
-			api: "claude-bridge",
-			models: MODELS,
-			// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
-			streamSimple: streamClaudeAgentSdk as any,
-		});
-	} else {
-		// Subsequent instance (subagent session): skip registration entirely.
-		// The subagent already has access to claude-bridge models via the shared
-		// ModelRegistry from the parent's registration. Calls to those models
-		// will route through the parent's streamSimple via the reentrant
-		// QueryContext stack mechanism.
-		debug(`provider: skipping re-registration, parent instance active (module=${moduleInstanceId})`);
+		debug(`provider: first instance in process, owning streamSimple (module=${moduleInstanceId})`);
 	}
+	pi.registerProvider(PROVIDER_ID, {
+		baseUrl: "claude-bridge",
+		apiKey: "not-used",
+		api: "claude-bridge",
+		models: MODELS,
+		// Cast: pi-ai AssistantMessageEventStream diamond dep between pi-coding-agent and pi-agent-core
+		streamSimple: (owningInstance
+			? streamClaudeAgentSdk
+			: (...args: Parameters<typeof streamClaudeAgentSdk>) => {
+				const impl = (g[ACTIVE_STREAM_SIMPLE_KEY] ?? streamClaudeAgentSdk) as typeof streamClaudeAgentSdk;
+				return impl(...args);
+			}) as any,
+	});
 
 	// --- AskClaude tool ---
 
