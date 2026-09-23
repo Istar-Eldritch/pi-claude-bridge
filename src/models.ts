@@ -3,7 +3,10 @@
 // Extracted from index.ts so tests can import without activating the extension.
 
 export const MODEL_IDS_IN_ORDER = [
+	"claude-fable-5-1[1m]",
 	"claude-fable-5[1m]",
+	"claude-opus-5-5",
+	"claude-opus-5-5[1m]",
 	"claude-opus-5",
 	"claude-opus-5[1m]",
 	"claude-opus-4-8",
@@ -39,6 +42,11 @@ const MODEL_OVERRIDES: Record<string, Record<string, any>> = {
 	// WD6, because it matches neither q4A nor Pq8() and O$H returns true for
 	// opus-4-7 on firstParty — but on API key it would also fall to WD6. TODO:
 	// verify opus-4-7 actual limit and add override + [1m] variant if needed.)
+	// claude-opus-5-5 declares native_1m:true in Claude Code's own model manifest
+	// (same as opus-5/opus-4-8/sonnet-5, all of which needed this 200K cap on this
+	// transport despite that flag) — defaulting to capped by precedent. Unverified
+	// live (see CHANGELOG); flip to uncapped if it turns out to behave like opus-4-7.
+	"claude-opus-5-5": { contextWindow: 200_000 },
 	"claude-opus-5": { contextWindow: 200_000 },
 	"claude-opus-4-8": { contextWindow: 200_000 },
 	"claude-sonnet-5": { contextWindow: 200_000 },
@@ -53,9 +61,19 @@ const MODEL_1M_ENTRIES: Record<
 	string,
 	{ id: string; name: string; contextWindow: number }
 > = {
+	"claude-opus-5-5[1m]": {
+		id: "claude-opus-5-5[1m]",
+		name: "Claude Opus 5.5 (1M)",
+		contextWindow: 1_000_000,
+	},
 	"claude-opus-5[1m]": {
 		id: "claude-opus-5[1m]",
 		name: "Claude Opus 5 (1M)",
+		contextWindow: 1_000_000,
+	},
+	"claude-fable-5-1[1m]": {
+		id: "claude-fable-5-1[1m]",
+		name: "Claude Fable 5.1 (1M)",
 		contextWindow: 1_000_000,
 	},
 	"claude-opus-4-8[1m]": {
@@ -91,6 +109,15 @@ const MODEL_1M_ENTRIES: Record<
 // Remove an entry once pi-ai ships the model natively (see git history for fable-5).
 const SYNTHETIC_BASE_MODELS: Record<string, { donor: string; name: string }> = {
 	"claude-opus-5": { donor: "claude-opus-4-8", name: "Claude Opus 5" },
+	// opus-5-5 clones opus-5 (itself synthetic) — relies on SYNTHETIC_BASE_MODELS'
+	// Object.entries() insertion order so the opus-5 donor exists in `augmented`
+	// by the time this entry is processed. Keep this entry after opus-5's.
+	"claude-opus-5-5": { donor: "claude-opus-5", name: "Claude Opus 5.5" },
+	// fable-5-1 clones the real (pi-ai-shipped) claude-fable-5. Only the [1m]
+	// variant is exposed in MODEL_IDS_IN_ORDER, matching fable-5's own precedent
+	// of not offering a bare (200K-capped) picker entry — this synthetic base
+	// exists solely so MODEL_1M_ENTRIES has something to clone from.
+	"claude-fable-5-1": { donor: "claude-fable-5", name: "Claude Fable 5.1" },
 };
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,

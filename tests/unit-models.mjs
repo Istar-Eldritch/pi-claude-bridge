@@ -31,7 +31,7 @@ const mockPiAiModel = (id) => ({
 // pi-ai only ever ships base (non-[1m]) model ids; the bridge synthesises the
 // [1m] variants. It also synthesises base models not yet shipped upstream (e.g.
 // claude-sonnet-5), so exclude those here to mirror what pi-ai actually returns.
-const SYNTHETIC_BASE_IDS = new Set(["claude-opus-5"]);
+const SYNTHETIC_BASE_IDS = new Set(["claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"]);
 const PI_AI_MODEL_IDS = [
 	...new Set(MODEL_IDS_IN_ORDER.map((id) => id.replace(/\[1m\]$/, ""))),
 ].filter((id) => !SYNTHETIC_BASE_IDS.has(id));
@@ -158,8 +158,8 @@ describe("MODELS projection", () => {
 describe("resolveModelId", () => {
 	const models = buildModels(PI_AI_MODEL_IDS.map(mockPiAiModel));
 
-	it("opus shortcut resolves to claude-opus-5 (newest opus, listed first)", () => {
-		assert.equal(resolveModelId(models, "opus"), "claude-opus-5");
+	it("opus shortcut resolves to claude-opus-5-5 (newest opus, listed first)", () => {
+		assert.equal(resolveModelId(models, "opus"), "claude-opus-5-5");
 	});
 
 	it("sonnet shortcut resolves to claude-sonnet-5 (newest sonnet, listed first)", () => {
@@ -173,8 +173,8 @@ describe("resolveModelId", () => {
 		assert.equal(resolveModelId(models, "haiku"), "claude-haiku-4-5");
 	});
 
-	it("fable shortcut resolves to claude-fable-5[1m]", () => {
-		assert.equal(resolveModelId(models, "fable"), "claude-fable-5[1m]");
+	it("fable shortcut resolves to claude-fable-5-1[1m] (newest fable, listed first)", () => {
+		assert.equal(resolveModelId(models, "fable"), "claude-fable-5-1[1m]");
 	});
 
 	it("full ID passes through unchanged", () => {
