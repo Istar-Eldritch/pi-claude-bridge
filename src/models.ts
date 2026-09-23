@@ -107,29 +107,31 @@ const MODEL_1M_ENTRIES: Record<
 // Key: missing model id. Value: donor model id to clone (cloned fields are then
 // patched with id/name; contextWindow is corrected by MODEL_OVERRIDES if needed).
 // Remove an entry once pi-ai ships the model natively (see git history for fable-5).
-const SYNTHETIC_BASE_MODELS: Record<string, { donor: string; name: string }> = {
-	"claude-opus-5": { donor: "claude-opus-4-8", name: "Claude Opus 5" },
-	// opus-5-5 clones opus-5 (itself synthetic) — relies on SYNTHETIC_BASE_MODELS'
-	// Object.entries() insertion order so the opus-5 donor exists in `augmented`
-	// by the time this entry is processed. Keep this entry after opus-5's.
-	"claude-opus-5-5": { donor: "claude-opus-5", name: "Claude Opus 5.5" },
-	// fable-5-1 clones the real (pi-ai-shipped) claude-fable-5. Only the [1m]
-	// variant is exposed in MODEL_IDS_IN_ORDER, matching fable-5's own precedent
-	// of not offering a bare (200K-capped) picker entry — this synthetic base
-	// exists solely so MODEL_1M_ENTRIES has something to clone from.
-	"claude-fable-5-1": { donor: "claude-fable-5", name: "Claude Fable 5.1" },
-};
+// pi-ai 0.87.1 ships every model we list natively (opus-5, opus-5-5,
+// fable-5-1 graduated in 0.87.1 — see git history for the synthetic versions).
+// The mechanism stays for the next time pi-ai lags behind a fresh Anthropic
+// release; tests inject examples since the real record is empty.
+export const SYNTHETIC_BASE_MODELS: Record<
+	string,
+	{ donor: string; name: string }
+> = {};
 
 // Project pi-ai's model entries down to the fields pi's registerProvider expects,
 // and keep MODEL_IDS_IN_ORDER ordering. IDs missing from pi-ai AND MODEL_1M_ENTRIES
 // are silently dropped.
 export function buildModels<T extends { id: string; [key: string]: any }>(
 	piAiModels: T[],
+	syntheticBaseModels: Record<
+		string,
+		{ donor: string; name: string }
+	> = SYNTHETIC_BASE_MODELS,
 ) {
-	// Augment with synthetic base models so new models work before pi-ai ships them.
+	// Augment with synthetic base models so new models work before pi-ai ships
+	// them. Entries process in insertion order — a synthetic may clone another
+	// synthetic, so keep a donor listed before any entry cloning it.
 	const augmented = [...piAiModels];
 	for (const [syntheticId, { donor, name }] of Object.entries(
-		SYNTHETIC_BASE_MODELS,
+		syntheticBaseModels,
 	)) {
 		if (augmented.some((m) => m.id === syntheticId)) continue;
 		const donorModel = augmented.find((m) => m.id === donor);

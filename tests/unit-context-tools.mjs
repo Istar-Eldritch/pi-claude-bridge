@@ -7,7 +7,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveContextTools, toolsFromTranscript } from "../src/context-tools.js";
+import { resolveContextSystemPrompt, resolveContextTools, toolsFromTranscript } from "../src/context-tools.js";
 
 const read = { name: "read", description: "read", parameters: { type: "object", properties: {} } };
 const bash = { name: "bash", description: "bash", parameters: { type: "object", properties: {} } };
@@ -74,5 +74,45 @@ describe("resolveContextTools", () => {
 	it("returns [] when neither channel has tools (side queries)", () => {
 		assert.deepStrictEqual(resolveContextTools({ messages: [{ role: "user", content: "summarize" }] }), []);
 		assert.deepStrictEqual(resolveContextTools({}), []);
+	});
+});
+
+describe("resolveContextSystemPrompt", () => {
+	const AGENT_PROMPT = "You are pi, the pi agent harness.";
+
+	it("prefers legacy Context.systemPrompt when populated (pi ≤0.8x shape)", () => {
+		const prompt = resolveContextSystemPrompt({
+			systemPrompt: AGENT_PROMPT,
+			messages: [{ role: "system", content: "stale folded prompt" }],
+		});
+		assert.strictEqual(prompt, AGENT_PROMPT);
+	});
+
+	it("recovers the folded prompt from the leading system message (new pi shape)", () => {
+		const prompt = resolveContextSystemPrompt({
+			systemPrompt: undefined,
+			messages: [
+				// timestamp: 0 mirrors pi-ai's createInitialSystemMessage output
+				{ role: "system", content: AGENT_PROMPT, timestamp: 0 },
+				{ role: "user", content: "hi" },
+			],
+		});
+		assert.strictEqual(prompt, AGENT_PROMPT);
+	});
+
+	it("replays later system messages (mid-convo system content appends)", () => {
+		const prompt = resolveContextSystemPrompt({
+			messages: [
+				{ role: "system", content: AGENT_PROMPT, timestamp: 0 },
+				{ role: "user", content: "hi" },
+				{ role: "system", content: "Extra guidance.", timestamp: 5 },
+			],
+		});
+		assert.strictEqual(prompt, `${AGENT_PROMPT}\n\nExtra guidance.`);
+	});
+
+	it("returns empty string for a plain transcript (side queries)", () => {
+		assert.strictEqual(resolveContextSystemPrompt({ messages: [{ role: "user", content: "summarize" }] }), "");
+		assert.strictEqual(resolveContextSystemPrompt({}), "");
 	});
 });

@@ -29,9 +29,11 @@ const mockPiAiModel = (id) => ({
 });
 
 // pi-ai only ever ships base (non-[1m]) model ids; the bridge synthesises the
-// [1m] variants. It also synthesises base models not yet shipped upstream (e.g.
-// claude-sonnet-5), so exclude those here to mirror what pi-ai actually returns.
-const SYNTHETIC_BASE_IDS = new Set(["claude-opus-5", "claude-opus-5-5", "claude-fable-5-1"]);
+// [1m] variants. Base models the bridge synthesises while pi-ai lags upstream
+// (SYNTHETIC_BASE_MODELS in src/models.ts) must be excluded here to mirror what
+// pi-ai actually returns — currently empty: pi-ai 0.87.1 ships every listed
+// model natively. Add ids back when the next fresh Anthropic release lands.
+const SYNTHETIC_BASE_IDS = new Set();
 const PI_AI_MODEL_IDS = [
 	...new Set(MODEL_IDS_IN_ORDER.map((id) => id.replace(/\[1m\]$/, ""))),
 ].filter((id) => !SYNTHETIC_BASE_IDS.has(id));
@@ -76,18 +78,32 @@ describe("MODELS projection", () => {
 		assert.equal(m1m.name, "Claude Opus 4.8 (1M)");
 	});
 
-	it("synthesises claude-opus-5 (+[1m]) from the opus-4-8 donor when pi-ai lacks it", () => {
-		// pi-ai doesn't ship claude-opus-5 yet; SYNTHETIC_BASE_MODELS clones the
-		// opus-4-8 donor so the model (and its 1M variant) is available early.
+	it("synthesises injected base models, including chained clones (donor order)", () => {
+		// pi-ai 0.87.1 ships every real model natively, so the real
+		// SYNTHETIC_BASE_MODELS record is empty; tests inject examples. Synthetic
+		// ids only surface if listed in MODEL_IDS_IN_ORDER, and a synthetic may
+		// clone another synthetic — the donor's entry must be listed before the
+		// entry cloning it (insertion order = processing order).
 		const donor = mockPiAiModel("claude-opus-4-8");
 		donor.contextWindow = 1_000_000;
-		const models = buildModels([donor]);
+		const injected = {
+			"claude-opus-5-5": { donor: "claude-opus-4-8", name: "Claude Opus 5.5" },
+			"claude-opus-5": {
+				donor: "claude-opus-5-5", // chained clone of another synthetic
+				name: "Claude Opus 5",
+			},
+		};
+		const models = buildModels([donor], injected);
 		const ids = models.map((m) => m.id);
-		assert.ok(ids.includes("claude-opus-5"), "synthetic base present");
-		assert.ok(ids.includes("claude-opus-5[1m]"), "[1m] variant present");
-		const base = models.find((m) => m.id === "claude-opus-5");
-		assert.equal(base.name, "Claude Opus 5");
+		assert.ok(ids.includes("claude-opus-5-5"), "synthetic base present");
+		assert.ok(ids.includes("claude-opus-5"), "chained synthetic present");
+		const base = models.find((m) => m.id === "claude-opus-5-5");
+		assert.equal(base.name, "Claude Opus 5.5");
 		assert.equal(base.contextWindow, 200_000); // MODEL_OVERRIDES cap
+		const chained = models.find((m) => m.id === "claude-opus-5");
+		assert.equal(chained.name, "Claude Opus 5");
+		assert.equal(chained.contextWindow, 200_000); // MODEL_OVERRIDES cap
+		assert.ok(ids.includes("claude-opus-5[1m]"), "[1m] variant present");
 		const m1m = models.find((m) => m.id === "claude-opus-5[1m]");
 		assert.equal(m1m.contextWindow, 1_000_000);
 		assert.equal(m1m.name, "Claude Opus 5 (1M)");

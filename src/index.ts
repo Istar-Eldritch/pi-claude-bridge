@@ -20,7 +20,7 @@ import { loadConfig, resolveSystemPromptMode } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { ensureOutputStyle, buildSystemPromptOptions, unionUserSource } from "./output-style.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
-import { resolveContextTools } from "./context-tools.js";
+import { resolveContextSystemPrompt, resolveContextTools } from "./context-tools.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
@@ -919,11 +919,12 @@ function runIsolatedSideQuery(
 	const providerSettings = loadConfig(cwd).provider ?? {};
 	const systemPromptMode = resolveSystemPromptMode(providerSettings);
 	const agentsAppend = extractAgentsAppend();
-	const skillsAppend = extractSkillsBlock(context.systemPrompt);
+	const contextPrompt = resolveContextSystemPrompt(context);
+	const skillsAppend = extractSkillsBlock(contextPrompt);
 	const appendParts = [agentsAppend, skillsAppend].filter((p): p is string => Boolean(p));
 	const systemPromptContent = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 	const outputStyleName = systemPromptMode === "output-style"
-		? ensureOutputStyle(context.systemPrompt, undefined, (deleted) => {
+		? ensureOutputStyle(contextPrompt, undefined, (deleted) => {
 			debug(`sidequery: output-style GC deleted ${deleted} stale file(s)`);
 		})
 		: undefined;
@@ -1257,14 +1258,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	const systemPromptMode = resolveSystemPromptMode(providerSettings);
 	// Always extract content; mode determines how it's passed to the SDK.
 	const agentsAppend = extractAgentsAppend();
-	const skillsAppend = extractSkillsBlock(context.systemPrompt);
+	const skillsAppend = extractSkillsBlock(resolveContextSystemPrompt(context));
 	const appendParts = [agentsAppend, skillsAppend].filter((part): part is string => Boolean(part));
 	const systemPromptContent = appendParts.length > 0 ? appendParts.join("\n\n") : undefined;
 
 	// NEW (R11): output style file lives at user level; union "user" into
 	// settingSources when a style is active (R3, §6.4).
 	const outputStyleName = systemPromptMode === "output-style"
-		? ensureOutputStyle(context.systemPrompt, undefined, (deleted) => {
+		? ensureOutputStyle(resolveContextSystemPrompt(context), undefined, (deleted) => {
 			debug(`provider: output-style GC deleted ${deleted} stale file(s)`);
 		})
 		: undefined;
