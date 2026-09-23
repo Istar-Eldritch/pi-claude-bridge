@@ -15,11 +15,12 @@ import { buildModels, resolveModelId as _resolveModelId } from "./models.js";
 import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, extractSkillsBlock } from "./skills.js";
 import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.js";
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
-import { QueryContext, ctx, stackDepth, pushContext, popContext, isStaleForeignPromptShape } from "./query-state.js";
+import { QueryContext, ctx, stackDepth, pushContext, popContext, isStaleForeignPromptShape, isEmptyAssistantOutput, EMPTY_RESPONSE_ERROR } from "./query-state.js";
 import { loadConfig, resolveSystemPromptMode } from "./config.js";
 import { extractAgentsAppend } from "./agents-md.js";
 import { ensureOutputStyle, buildSystemPromptOptions, unionUserSource } from "./output-style.js";
 import { jsonSchemaToZodShape } from "./typebox-to-zod.js";
+import { resolveContextTools } from "./context-tools.js";
 import { buildActionSummary, type ToolCallState } from "./askclaude-ui.js";
 
 // Compat (#2): use factory if available (pi-ai ≥0.66), else fall back to constructor (gsd-pi etc.)
@@ -506,9 +507,14 @@ function resolveMcpTools(context: Context, excludeToolName?: string): {
 	const customToolNameToSdk = new Map<string, string>();
 	const customToolNameToPi = new Map<string, string>();
 
-	if (!context.tools) return { mcpTools, customToolNameToSdk, customToolNameToPi };
+	// Tools arrive via context.tools on older pi; newer pi's agent loop rebuilds
+	// the provider context with normalizeContext({messages}) and leaves context.tools
+	// empty — there the active tool set travels as toolsAdded on system messages
+	// (the same channel native providers read). resolveContextTools handles both.
+	const tools = resolveContextTools(context as { tools?: Tool[]; messages?: unknown });
+	if (tools.length === 0) return { mcpTools, customToolNameToSdk, customToolNameToPi };
 
-	for (const tool of context.tools) {
+	for (const tool of tools) {
 		if (tool.name === excludeToolName) continue;
 		const sdkName = `${MCP_TOOL_PREFIX}${tool.name}`;
 		mcpTools.push(tool);
@@ -630,6 +636,20 @@ function ensureTurnStarted(): void {
 
 function finalizeCurrentStream(stopReason?: string): void {
 	if (!ctx().currentPiStream || !ctx().turnOutput) return;
+	// Degenerate model response guard: the turn completed (end_turn / max_tokens)
+	// but produced no text and no tool call — only (possibly empty) thinking.
+	// Pi would render an empty reply and silently move on; surface it as a turn
+	// error instead so the user sees why, and so pi's auto-retry (if enabled)
+	// can re-run the turn. Aborted turns keep their own messaging.
+	if (stopReason !== "aborted" && isEmptyAssistantOutput(ctx().turnOutput)) {
+		debug(`provider: finalizeCurrentStream — turn completed (${stopReason}) with no text/toolCall blocks, surfacing as error`);
+		ctx().turnOutput.stopReason = "error";
+		ctx().turnOutput.errorMessage = EMPTY_RESPONSE_ERROR;
+		ctx().currentPiStream!.push({ type: "error", reason: "error", error: ctx().turnOutput });
+		ctx().currentPiStream!.end();
+		ctx().currentPiStream = null;
+		return;
+	}
 	debug(`provider: finalizeCurrentStream called, stopReason=${stopReason}, turnOutput=${JSON.stringify({stopReason: ctx().turnOutput!.stopReason, error: ctx().turnOutput!.errorMessage})}`);
 	if (!ctx().turnStarted) ensureTurnStarted();
 	const reason = stopReason === "length" ? "length" : "stop";
@@ -1039,6 +1059,16 @@ function runIsolatedSideQuery(
 				return;
 			}
 
+			if (text.trim().length === 0) {
+				// Degenerate summary response (no text at all) — fail the side query
+				// instead of resolving compaction with an empty summary.
+				debug(`sidequery: completed with no text, surfacing as error`);
+				output.stopReason = "error";
+				output.errorMessage = EMPTY_RESPONSE_ERROR;
+				stream.push({ type: "error", reason: "error", error: output });
+				stream.end();
+				return;
+			}
 			ensureStarted();
 			if (textStarted) stream.push({ type: "text_end", contentIndex: 0, content: text, partial: output });
 			const reason = output.stopReason === "length" ? "length" : "stop";
@@ -1397,6 +1427,12 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 
 					try {
 						const { capturedSessionId: contSid } = await consumeQuery(contQuery, customToolNameToPi, model, () => wasAborted);
+						if (ctx().turnOutput && isEmptyAssistantOutput(ctx().turnOutput)) {
+							// Empty continuation turn — stop replaying further deferred messages;
+							// finalizeCurrentStream below surfaces the error for this turn.
+							debug(`provider: continuation turn returned empty output — stopping replay`);
+							break;
+						}
 						const sid = contSid ?? sharedSession?.sessionId;
 						if (sid) {
 							sharedSession = { sessionId: sid, cursor: sharedSession?.cursor ?? 0, cwd };
@@ -1419,7 +1455,9 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			// Reentrant queries are left for the outer .finally() to pop.
 			if (!isReentrant) ctx().activeQuery = null;
 			// Signal to session_compact that this compact was auto-triggered (not manual).
-			if (!isReentrant && !wasAborted) pendingAutoCompact = true;
+			// Skip on an empty response — finalizeCurrentStream turns it into an error,
+			// and an errored turn shouldn't invite auto-compaction.
+			if (!isReentrant && !wasAborted && !(ctx().turnOutput && isEmptyAssistantOutput(ctx().turnOutput))) pendingAutoCompact = true;
 			finalizeCurrentStream(ctx().turnOutput?.stopReason);
 		})
 		.catch((error) => {

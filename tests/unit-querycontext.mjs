@@ -5,9 +5,45 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { ctx, pushContext, popContext, resetStack, stackDepth, isStaleForeignPromptShape } from "../src/query-state.js";
+import { ctx, pushContext, popContext, resetStack, stackDepth, isStaleForeignPromptShape, isEmptyAssistantOutput, EMPTY_RESPONSE_ERROR } from "../src/query-state.js";
 
 const fakeModel = { api: "anthropic", provider: "anthropic", id: "test-model" };
+
+// Shape of a completed turn whose visible output is empty: the model ended the
+// turn after thinking (or nothing at all) with no text and no tool calls.
+// Seen with claude-sonnet-5 via the Agent SDK — thinking off (empty signed
+// thinking block) and effort=medium (visible thinking, then silence).
+describe("isEmptyAssistantOutput", () => {
+	it("flags empty content", () => {
+		assert.strictEqual(isEmptyAssistantOutput({ content: [] }), true);
+	});
+
+	it("flags thinking-only output, empty or not", () => {
+		assert.strictEqual(isEmptyAssistantOutput({ content: [{ type: "thinking", thinking: "", thinkingSignature: "sig" }] }), true);
+		assert.strictEqual(isEmptyAssistantOutput({ content: [{ type: "thinking", thinking: "I pondered greatly" }] }), true);
+	});
+
+	it("flags whitespace-only text", () => {
+		assert.strictEqual(isEmptyAssistantOutput({ content: [{ type: "text", text: "  \n\t" }] }), true);
+	});
+
+	it("accepts non-empty text", () => {
+		assert.strictEqual(isEmptyAssistantOutput({ content: [{ type: "text", text: "hello" }] }), false);
+	});
+
+	it("accepts tool calls (even alongside empty thinking)", () => {
+		assert.strictEqual(isEmptyAssistantOutput({ content: [{ type: "toolCall", id: "t1", name: "bash", arguments: {} }] }), false);
+		assert.strictEqual(isEmptyAssistantOutput({ content: [{ type: "thinking", thinking: "" }, { type: "toolCall", id: "t1", name: "bash", arguments: {} }] }), false);
+	});
+
+	it("EMPTY_RESPONSE_ERROR matches pi's retryable-provider-error pattern (enables auto-retry)", () => {
+		// pi-ai isRetryableAssistantError retries only messages matching
+		// RETRYABLE_PROVIDER_ERROR_PATTERN; "server error" keeps empty-response
+		// turns eligible for pi's built-in auto-retry.
+		assert.strictEqual(EMPTY_RESPONSE_ERROR, "Model returned an empty response (upstream server error)");
+		assert.match(EMPTY_RESPONSE_ERROR, /server.?error/i);
+	});
+});
 
 describe("QueryContext class", () => {
 	beforeEach(() => resetStack());

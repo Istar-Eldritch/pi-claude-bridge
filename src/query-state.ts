@@ -67,6 +67,30 @@ export class QueryContext {
 	}
 }
 
+// True when a completed turn produced nothing visible: no non-empty text block
+// and no tool call — only (possibly empty) thinking blocks, or nothing at all.
+//
+// Observed with claude-sonnet-5 via the Agent SDK: the model streams thinking,
+// then ends the turn (end_turn) without emitting any text or tool_use. This
+// happens both with thinking disabled (empty signed thinking block) and with
+// an effort level set (visible thinking, then silence). Pi renders the empty
+// reply and silently moves on, which reads as "the model stopped working".
+// Callers surface it as a turn error instead (see finalizeCurrentStream and
+// runIsolatedSideQuery) so the user sees why. The "(upstream server error)"
+// suffix is deliberate: pi's auto-retry only re-runs errors whose message
+// matches its retryable-provider-error pattern (pi-ai isRetryableAssistantError),
+// and transient server-side degradations are exactly what this failure turned
+// out to be (see the 1M-context-beta + org extra-usage-window incident).
+export const EMPTY_RESPONSE_ERROR = "Model returned an empty response (upstream server error)";
+
+export function isEmptyAssistantOutput(output: AssistantMessage): boolean {
+	for (const block of output.content) {
+		if (block.type === "text" && block.text.trim().length > 0) return false;
+		if (block.type === "toolCall") return false;
+	}
+	return true;
+}
+
 let _ctx = new QueryContext();
 const contextStack: QueryContext[] = [];
 
